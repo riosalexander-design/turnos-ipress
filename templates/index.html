@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IPRESS - Sistema de Programación Asistencial Médica</title>
+    <!-- Tailwind CSS CDN para diseño moderno -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="/static/css/styles.css?v=2.1">
+</head>
+<body class="bg-slate-50 text-slate-800 font-sans min-h-screen flex flex-col">
+
+    <!-- BARRA SUPERIOR INSTITUCIONAL -->
+    <header class="bg-gradient-to-r from-blue-900 via-indigo-900 to-sky-900 text-white shadow-lg sticky top-0 z-30">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 flex flex-wrap justify-between items-center gap-4">
+            
+            <div class="flex items-center space-x-3">
+                <div class="w-10 h-10 rounded-lg bg-white/10 flex items-center justify-center border border-white/20 text-sky-300 text-xl font-bold shadow-inner">
+                    <i class="fa-solid fa-hospital-user"></i>
+                </div>
+                <div>
+                    <h1 class="text-lg font-bold tracking-tight text-white flex items-center gap-2">
+                        IPRESS SALUD PERÚ
+                        <span class="text-xs font-medium px-2 py-0.5 rounded-full bg-sky-500/30 text-sky-200 border border-sky-400/30">Sector Asistencial</span>
+                    </h1>
+                    <p class="text-xs text-slate-300">Programación Mensual de Médicos Cirujanos (25 Turnos Base - Feriados)</p>
+                </div>
+            </div>
+
+            <!-- SELECTORES DE MES Y AÑO -->
+            <div class="flex items-center space-x-2 bg-white/10 p-1.5 rounded-lg border border-white/20">
+                <i class="fa-regular fa-calendar text-sky-300 ml-1.5"></i>
+                <select id="selectMonth" class="bg-transparent text-white font-medium text-sm focus:outline-none cursor-pointer">
+                    <option class="text-slate-800" value="1">Enero</option>
+                    <option class="text-slate-800" value="2">Febrero</option>
+                    <option class="text-slate-800" value="3">Marzo</option>
+                    <option class="text-slate-800" value="4">Abril</option>
+                    <option class="text-slate-800" value="5">Mayo</option>
+                    <option class="text-slate-800" value="6">Junio</option>
+                    <option class="text-slate-800" value="7">Julio</option>
+                    <option class="text-slate-800" value="8">Agosto</option>
+                    <option class="text-slate-800" value="9">Setiembre</option>
+                    <option class="text-slate-800" value="10" selected>Octubre</option>
+                    <option class="text-slate-800" value="11">Noviembre</option>
+                    <option class="text-slate-800" value="12">Diciembre</option>
+                </select>
+                <select id="selectYear" class="bg-transparent text-white font-medium text-sm focus:outline-none cursor-pointer">
+                    <option class="text-slate-800" value="2026" selected>2026</option>
+                    <option class="text-slate-800" value="2027">2027</option>
+                </select>
+                <button id="btnReload" title="Recargar programación" class="p-1 hover:bg-white/20 rounded transition text-xs">
+                    <i class="fa-solid fa-arrows-rotate"></i>
+                </button>
+            </div>
+
+            <!-- PERFIL DE USUARIO ACTIVO Y CAMBIO RÁPIDO -->
+            <div class="flex items-center space-x-3">
+                <div class="text-right hidden sm:block">
+                    <div id="currentUserLabel" class="text-xs font-semibold text-white">Cargando usuario...</div>
+                    <div id="currentUserCmp" class="text-[10px] text-sky-200">CMP: -----</div>
+                </div>
+                
+                <div class="relative group">
+                    <button id="btnUserMenu" class="flex items-center gap-2 bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded-lg border border-white/20 transition text-sm">
+                        <i class="fa-solid fa-user-doctor text-sky-300"></i>
+                        <span id="userShortName" class="font-medium text-xs">Mi Cuenta</span>
+                        <i class="fa-solid fa-chevron-down text-[10px] text-slate-300"></i>
+                    </button>
+                    <!-- Dropdown de cambio rápido de médico -->
+                    <div class="absolute right-0 mt-2 w-64 bg-white rounded-xl shadow-2xl border border-slate-200 py-2 hidden group-hover:block z-50 text-slate-700">
+                        <div class="px-3 py-1.5 border-b border-slate-100 text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                            Cambiar de Perfil Médico
+                        </div>
+                        <div id="doctorsSwitchList" class="max-h-60 overflow-y-auto">
+                            <!-- Inyectado por JS -->
+                        </div>
+                        <div class="border-t border-slate-100 mt-1 pt-1 px-2">
+                            <button onclick="openLoginModal()" class="w-full text-left px-3 py-1.5 text-xs text-blue-600 hover:bg-blue-50 rounded flex items-center gap-2">
+                                <i class="fa-solid fa-key"></i> Iniciar Sesión con PIN
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Botón simulador de tiempo -->
+                <button onclick="openSimTimeModal()" title="Simulador de Fecha/Hora para pruebas de plazo" class="bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-400/30 px-2.5 py-1.5 rounded-lg text-xs flex items-center gap-1.5">
+                    <i class="fa-regular fa-clock"></i>
+                    <span id="simTimeBadge" class="hidden md:inline">Simulador</span>
+                </button>
+            </div>
+
+        </div>
+    </header>
+
+    <!-- CONTENIDO PRINCIPAL -->
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 flex-1 w-full space-y-6">
+
+        <!-- BANNER DE APROBACIÓN O ESTADO -->
+        <div id="approvalBanner" class="hidden rounded-2xl p-4 shadow-sm border transition-all duration-300">
+            <!-- Inyectado dinámicamente -->
+        </div>
+
+        <!-- TARJETAS DE INDICADORES (KPIS) -->
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+            
+            <!-- KPI 1: Meta del Mes -->
+            <div class="bg-white p-4 rounded-xl shadow-sm border border-slate-200/80 relative overflow-hidden group hover:border-blue-300 transition">
+                <div class="flex items-center justify-between text-slate-500 text-xs font-medium">
+                    <span>META DEL MES</span>
+                    <span class="w-7 h-7 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center font-bold">
+                        <i class="fa-solid fa-calculator"></i>
+                    </span>
+                </div>
+                <div class="mt-2 flex items-baseline gap-2">
+                    <span id="kpiMonthQuota" class="text-2xl font-black text-slate-800">25</span>
+                    <span class="text-xs font-semibold text-slate-500">turnos</span>
+                </div>
+                <div id="kpiHolidaysInfo" class="mt-2 text-[11px] text-slate-500 flex items-center gap-1">
+                    <i class="fa-solid fa-info-circle text-blue-500"></i>
+                    <span>Base 25 - 0 feriados lun-sáb</span>
+                </div>
+            </div>
+
+            <!-- KPI 2: Mi Progreso -->
+            <div class="bg-white p-4 rounded-xl shadow-sm border border-slate-200/80 relative overflow-hidden group hover:border-emerald-300 transition">
+                <div class="flex items-center justify-between text-slate-500 text-xs font-medium">
+                    <span>MI PROGRAMACIÓN</span>
+                    <span class="w-7 h-7 rounded-lg bg-emerald-50 text-emerald-600 flex items-center justify-center font-bold">
+                        <i class="fa-solid fa-user-check"></i>
+                    </span>
+                </div>
+                <div class="mt-2 flex items-baseline gap-2">
+                    <span id="kpiMyShifts" class="text-2xl font-black text-slate-800">0</span>
+                    <span id="kpiMyShiftsTotal" class="text-xs font-semibold text-slate-500">/ 25 turnos</span>
+                </div>
+                <div class="mt-2">
+                    <div class="w-full bg-slate-100 rounded-full h-1.5 overflow-hidden">
+                        <div id="kpiMyProgressBar" class="bg-emerald-500 h-1.5 rounded-full transition-all duration-500" style="width: 0%"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- KPI 3: Reglas de 12 Horas -->
+            <div class="bg-white p-4 rounded-xl shadow-sm border border-slate-200/80 relative overflow-hidden group hover:border-purple-300 transition">
+                <div class="flex items-center justify-between text-slate-500 text-xs font-medium">
+                    <span>TURNOS 12 HORAS</span>
+                    <span class="w-7 h-7 rounded-lg bg-purple-50 text-purple-600 flex items-center justify-center font-bold">
+                        <i class="fa-solid fa-business-time"></i>
+                    </span>
+                </div>
+                <div class="mt-2 flex items-baseline gap-2">
+                    <span id="kpi12hShifts" class="text-2xl font-black text-slate-800">0</span>
+                    <span id="kpi12hTarget" class="text-xs font-semibold text-slate-500">turnos</span>
+                </div>
+                <div id="kpi12hRuleText" class="mt-2 text-[11px] text-slate-500 truncate">
+                    Viernes: 1 turno (Sáb libre)
+                </div>
+            </div>
+
+            <!-- KPI 4: Discrepancias / Conflictos -->
+            <div class="bg-white p-4 rounded-xl shadow-sm border border-slate-200/80 relative overflow-hidden group hover:border-amber-300 transition">
+                <div class="flex items-center justify-between text-slate-500 text-xs font-medium">
+                    <span>DISCREPANCIAS</span>
+                    <span id="kpiDiscrepanciesBadgeIcon" class="w-7 h-7 rounded-lg bg-slate-100 text-slate-500 flex items-center justify-center font-bold">
+                        <i class="fa-solid fa-handshake-angle"></i>
+                    </span>
+                </div>
+                <div class="mt-2 flex items-baseline gap-2">
+                    <span id="kpiDiscrepanciesCount" class="text-2xl font-black text-slate-800">0</span>
+                    <span class="text-xs font-semibold text-slate-500">conflictos</span>
+                </div>
+                <div id="kpiDiscrepanciesText" class="mt-2 text-[11px] text-slate-500 truncate">
+                    Sin discrepancias activas
+                </div>
+            </div>
+
+            <!-- KPI 5: Límite de Aprobación -->
+            <div class="bg-white p-4 rounded-xl shadow-sm border border-slate-200/80 relative overflow-hidden group hover:border-rose-300 transition">
+                <div class="flex items-center justify-between text-slate-500 text-xs font-medium">
+                    <span>CORTE INSTITUCIONAL</span>
+                    <span class="w-7 h-7 rounded-lg bg-rose-50 text-rose-600 flex items-center justify-center font-bold">
+                        <i class="fa-solid fa-hourglass-half"></i>
+                    </span>
+                </div>
+                <div class="mt-2">
+                    <span class="text-base font-bold text-rose-700">Día 10 a las 00:00 h</span>
+                </div>
+                <div id="kpiDeadlineSubtext" class="mt-2 text-[11px] text-slate-500 truncate">
+                    Plazo máx subsanación: 72 hrs
+                </div>
+            </div>
+
+        </div>
+
+        <!-- BARRA DE HERRAMIENTAS Y ACCIONES -->
+        <div class="bg-white p-4 rounded-xl shadow-sm border border-slate-200/80 flex flex-wrap items-center justify-between gap-3">
+            
+            <div class="flex flex-wrap items-center gap-2">
+                <!-- Botón Autocompletar / Corte Día 10 -->
+                <button onclick="triggerAutoAssignDay10()" class="bg-blue-600 hover:bg-blue-700 text-white font-medium text-xs px-3.5 py-2 rounded-lg shadow-sm flex items-center gap-2 transition active:scale-95">
+                    <i class="fa-solid fa-wand-magic-sparkles"></i>
+                    <span>Corte Día 10: Asignar Automáticamente</span>
+                </button>
+
+                <!-- Botón Centro de Discrepancias -->
+                <button onclick="openDiscrepanciesModal()" id="btnDiscrepancies" class="bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium text-xs px-3.5 py-2 rounded-lg border border-slate-300/80 flex items-center gap-2 transition">
+                    <i class="fa-solid fa-triangle-exclamation text-amber-500"></i>
+                    <span>Centro de Discrepancias (<span id="btnDiscCount">0</span>)</span>
+                </button>
+
+                <!-- Botón Validar y Aprobar Horario -->
+                <button onclick="triggerValidateApproval()" class="bg-emerald-600 hover:bg-emerald-700 text-white font-medium text-xs px-3.5 py-2 rounded-lg shadow-sm flex items-center gap-2 transition active:scale-95">
+                    <i class="fa-solid fa-check-double"></i>
+                    <span>Validar y Aprobar Horario</span>
+                </button>
+            </div>
+
+            <div class="flex items-center gap-2">
+                <!-- Botón Exportar a Excel -->
+                <button onclick="downloadExcel()" class="bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 font-medium text-xs px-3.5 py-2 rounded-lg flex items-center gap-2 transition active:scale-95">
+                    <i class="fa-solid fa-file-excel text-emerald-600 text-sm"></i>
+                    <span>Exportar a Excel (.xlsx)</span>
+                </button>
+
+                <!-- Botón Imprimir -->
+                <button onclick="window.print()" class="bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 font-medium text-xs px-3 py-2 rounded-lg transition">
+                    <i class="fa-solid fa-print"></i>
+                </button>
+            </div>
+
+        </div>
+
+        <!-- LEYENDA RÁPIDA DE SERVICIOS -->
+        <div class="bg-slate-100/80 p-3 rounded-xl border border-slate-200 text-xs flex flex-wrap items-center justify-between gap-3">
+            <div class="font-bold text-slate-600 flex items-center gap-1.5">
+                <i class="fa-solid fa-tags text-blue-600"></i>
+                <span>SERVICIOS:</span>
+            </div>
+            <div class="flex flex-wrap items-center gap-2">
+                <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-orange-100 text-orange-800 border border-orange-200">
+                    <span class="w-2 h-2 rounded-full bg-orange-500"></span> M-TU / T-TU (Urgencias)
+                </span>
+                <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-blue-100 text-blue-800 border border-blue-200">
+                    <span class="w-2 h-2 rounded-full bg-blue-500"></span> M-CE / T-CE (Consultorio)
+                </span>
+                <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                    <span class="w-2 h-2 rounded-full bg-emerald-500"></span> M-TS (Telesalud)
+                </span>
+                <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-amber-100 text-amber-800 border border-amber-300">
+                    <span class="w-2 h-2 rounded-full bg-amber-500"></span> 12h (Mañana+Tarde)
+                </span>
+                <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-purple-100 text-purple-800 border border-purple-200">
+                    <span class="w-2 h-2 rounded-full bg-purple-500"></span> DES (Descanso post-12h)
+                </span>
+                <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-rose-100 text-rose-800 border border-rose-300">
+                    <span class="w-2 h-2 rounded-full bg-rose-600"></span> Feriado (Descuenta)
+                </span>
+            </div>
+            <div class="text-[11px] text-slate-500 italic">
+                * Solo puedes editar turnos en tu propia fila
+            </div>
+        </div>
+
+        <!-- MATRIZ MENSUAL DEL ROL MÉDICO -->
+        <div class="bg-white rounded-2xl shadow-sm border border-slate-200/90 overflow-hidden">
+            <div class="p-4 border-b border-slate-200 flex justify-between items-center bg-slate-50/50">
+                <div class="flex items-center gap-2">
+                    <i class="fa-solid fa-calendar-days text-blue-700"></i>
+                    <h2 class="text-sm font-bold text-slate-800">ROL DE PROGRAMACIÓN MENSUAL ASISTENCIAL</h2>
+                    <span id="matrixMonthLabel" class="text-xs text-slate-500">Octubre 2026</span>
+                </div>
+                <div class="text-xs text-slate-500 flex items-center gap-2">
+                    <span class="inline-block w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
+                    <span>Cobertura mínima: &ge; 2 médicos por turno</span>
+                </div>
+            </div>
+
+            <div class="overflow-x-auto" id="matrixContainer">
+                <table class="w-full text-center border-collapse text-xs select-none">
+                    <thead>
+                        <!-- Fila 1: Días del Mes (1..31) -->
+                        <tr id="headerDaysRow" class="bg-slate-800 text-white font-bold border-b border-slate-700">
+                            <!-- Inyectado por JS -->
+                        </tr>
+                        <!-- Fila 2: Días de la Semana (Lu, Ma, Mi...) -->
+                        <tr id="headerWeekdaysRow" class="bg-slate-100 text-slate-600 font-semibold border-b border-slate-200">
+                            <!-- Inyectado por JS -->
+                        </tr>
+                    </thead>
+                    <tbody id="matrixBody" class="divide-y divide-slate-200">
+                        <!-- Filas de los 5 médicos inyectadas por JS -->
+                    </tbody>
+                    <tfoot>
+                        <!-- Fila de Cobertura Mañana -->
+                        <tr id="coverageMorningRow" class="bg-blue-50/70 border-t-2 border-slate-300 font-bold">
+                            <!-- Inyectado por JS -->
+                        </tr>
+                        <!-- Fila de Cobertura Tarde -->
+                        <tr id="coverageAfternoonRow" class="bg-slate-50 border-t border-slate-200 font-bold">
+                            <!-- Inyectado por JS -->
+                        </tr>
+                    </tfoot>
+                </table>
+            </div>
+        </div>
+
+    </main>
+
+    <!-- FOOTER -->
+    <footer class="bg-white border-t border-slate-200 py-4 text-center text-xs text-slate-500 mt-auto">
+        <div class="max-w-7xl mx-auto px-4 flex flex-wrap justify-between items-center gap-2">
+            <div>
+                <strong>IPRESS SALUD PERÚ</strong> - Plataforma de Gestión Médica Asistencial
+            </div>
+            <div>
+                Normativa Asistencial: 25 Turnos Base - Feriados Nacionales (Lun a Sáb) | Dotación Mínima: 2 Médicos
+            </div>
+        </div>
+    </footer>
+
+    <!-- ============================================================== -->
+    <!-- MODAL 1: ASIGNAR / EDITAR TURNO PROPIO -->
+    <!-- ============================================================== -->
+    <div id="modalShiftEdit" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+        <div class="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-md overflow-hidden transform transition-all">
+            <div class="bg-gradient-to-r from-blue-800 to-indigo-900 text-white p-4 flex justify-between items-center">
+                <div class="flex items-center gap-2">
+                    <i class="fa-solid fa-clock text-sky-300"></i>
+                    <h3 class="font-bold text-sm" id="modalShiftTitle">Asignar Mi Turno</h3>
+                </div>
+                <button onclick="closeModal('modalShiftEdit')" class="text-slate-300 hover:text-white">
+                    <i class="fa-solid fa-xmark text-lg"></i>
+                </button>
+            </div>
+            
+            <div class="p-5 space-y-4">
+                <div class="bg-slate-50 p-3 rounded-xl border border-slate-200 text-xs">
+                    <div class="font-bold text-slate-700" id="modalShiftDocName">Dr. Nombre</div>
+                    <div class="text-slate-500" id="modalShiftDayDate">Día: 15/10/2026 (Jueves)</div>
+                </div>
+
+                <!-- Selección de Período -->
+                <div>
+                    <label class="block text-xs font-bold text-slate-700 mb-1.5 uppercase">1. Período / Jornada:</label>
+                    <div class="grid grid-cols-2 gap-2">
+                        <label class="flex items-center gap-2 p-2.5 rounded-lg border border-slate-200 cursor-pointer hover:bg-slate-50 has-[:checked]:border-blue-500 has-[:checked]:bg-blue-50">
+                            <input type="radio" name="optPeriod" value="M" checked onchange="handlePeriodChange()">
+                            <span class="text-xs font-semibold text-slate-800">Mañana (6h)</span>
+                        </label>
+                        <label class="flex items-center gap-2 p-2.5 rounded-lg border border-slate-200 cursor-pointer hover:bg-slate-50 has-[:checked]:border-blue-500 has-[:checked]:bg-blue-50">
+                            <input type="radio" name="optPeriod" value="T" onchange="handlePeriodChange()">
+                            <span class="text-xs font-semibold text-slate-800">Tarde (6h)</span>
+                        </label>
+                        <label class="flex items-center gap-2 p-2.5 rounded-lg border border-slate-200 cursor-pointer hover:bg-slate-50 has-[:checked]:border-amber-500 has-[:checked]:bg-amber-50">
+                            <input type="radio" name="optPeriod" value="12h" onchange="handlePeriodChange()">
+                            <span class="text-xs font-semibold text-slate-800">12 Horas (M + T)</span>
+                        </label>
+                        <label class="flex items-center gap-2 p-2.5 rounded-lg border border-slate-200 cursor-pointer hover:bg-slate-50 has-[:checked]:border-purple-500 has-[:checked]:bg-purple-50">
+                            <input type="radio" name="optPeriod" value="DES" onchange="handlePeriodChange()">
+                            <span class="text-xs font-semibold text-slate-800">Descanso (12h)</span>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Selección de Servicio -->
+                <div id="serviceSelectContainer">
+                    <label class="block text-xs font-bold text-slate-700 mb-1.5 uppercase">2. Servicio Asistencial:</label>
+                    <div class="space-y-1.5" id="servicesRadioGroup">
+                        <!-- Inyectado dinámicamente según M, T o 12h -->
+                    </div>
+                </div>
+
+                <!-- Botón borrar turno y guardar -->
+                <div class="pt-3 border-t border-slate-200 flex justify-between items-center bg-slate-50 -mx-5 -mb-5 p-4 rounded-b-2xl">
+                    <button onclick="handleDeleteCurrentShift()" class="text-xs text-rose-600 hover:text-rose-800 font-bold flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg hover:bg-rose-50 transition">
+                        <i class="fa-solid fa-trash-can"></i> Dejar Libre
+                    </button>
+                    <div class="flex items-center gap-2">
+                        <button onclick="closeModal('modalShiftEdit')" class="px-3.5 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-200 rounded-lg transition">
+                            Cancelar
+                        </button>
+                        <button onclick="handleSaveCurrentShift()" class="px-5 py-2 text-xs bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg shadow-md hover:shadow-lg transition flex items-center gap-2 active:scale-95">
+                            <i class="fa-solid fa-floppy-disk text-sm"></i>
+                            <span>Guardar Propuesta</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============================================================== -->
+    <!-- MODAL 2: CENTRO DE DISCREPANCIAS Y CONCILIACIÓN (72H) -->
+    <!-- ============================================================== -->
+    <div id="modalDiscrepancies" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+        <div class="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-3xl max-h-[90vh] flex flex-col overflow-hidden">
+            <div class="bg-gradient-to-r from-amber-600 to-orange-700 text-white p-4 flex justify-between items-center">
+                <div class="flex items-center gap-2">
+                    <i class="fa-solid fa-handshake-angle text-xl"></i>
+                    <div>
+                        <h3 class="font-bold text-sm">Centro de Discrepancias y Conciliación Asistencial</h3>
+                        <p class="text-[11px] text-amber-100">Resolución de discrepancias entre propuestas médicas con ofertas alternativas</p>
+                    </div>
+                </div>
+                <button onclick="closeModal('modalDiscrepancies')" class="text-amber-200 hover:text-white">
+                    <i class="fa-solid fa-xmark text-lg"></i>
+                </button>
+            </div>
+            
+            <div class="p-5 overflow-y-auto flex-1 space-y-4">
+                
+                <!-- Notificación normativa de 72 horas y tope día 10 a las 00:00 -->
+                <div class="bg-amber-50 border-l-4 border-amber-500 p-3 rounded-r-xl text-xs text-amber-900">
+                    <div class="font-bold flex items-center gap-1.5">
+                        <i class="fa-solid fa-clock"></i> Plazo Normativo de Subsanación:
+                    </div>
+                    <p class="mt-1 text-[11px] text-amber-800">
+                        De no estar de acuerdo con la alternativa sugerida por el sistema, los médicos involucrados disponen de un plazo máximo de <strong>72 horas</strong> para ingresar su modificación acordada, <strong>sin pasarse del Día 10 a las 00:00 horas</strong>.
+                    </p>
+                </div>
+
+                <div id="discrepanciesListContainer" class="space-y-4">
+                    <!-- Inyectado por JS -->
+                </div>
+
+            </div>
+
+            <div class="p-3 bg-slate-50 border-t border-slate-200 flex justify-end">
+                <button onclick="closeModal('modalDiscrepancies')" class="px-4 py-2 text-xs bg-slate-200 hover:bg-slate-300 font-semibold text-slate-700 rounded-lg">
+                    Cerrar
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============================================================== -->
+    <!-- MODAL 3: INICIAR SESIÓN CON CMP Y PIN -->
+    <!-- ============================================================== -->
+    <div id="modalLogin" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+        <div class="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-sm overflow-hidden">
+            <div class="bg-slate-900 text-white p-4 flex justify-between items-center">
+                <div class="flex items-center gap-2">
+                    <i class="fa-solid fa-lock text-sky-400"></i>
+                    <h3 class="font-bold text-sm">Autenticación Médica IPRESS</h3>
+                </div>
+                <button onclick="closeModal('modalLogin')" class="text-slate-400 hover:text-white">
+                    <i class="fa-solid fa-xmark text-lg"></i>
+                </button>
+            </div>
+            <form onsubmit="handleLoginSubmit(event)" class="p-5 space-y-4">
+                <div>
+                    <label class="block text-xs font-bold text-slate-700 mb-1">Número de CMP o Usuario:</label>
+                    <input type="text" id="loginCmp" required placeholder="Ej: 71201 o ADMIN" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                </div>
+                <div>
+                    <label class="block text-xs font-bold text-slate-700 mb-1">PIN / Contraseña:</label>
+                    <input type="password" id="loginPin" required placeholder="PIN de 4 dígitos (Defecto: 1234)" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                </div>
+                <div id="loginErrorMsg" class="hidden text-xs text-rose-600 font-semibold"></div>
+                <button type="submit" class="w-full py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg text-xs transition shadow-sm">
+                    Iniciar Sesión
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- ============================================================== -->
+    <!-- MODAL 4: SIMULADOR DE FECHA / HORA -->
+    <!-- ============================================================== -->
+    <div id="modalSimTime" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+        <div class="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-md overflow-hidden">
+            <div class="bg-amber-600 text-white p-4 flex justify-between items-center">
+                <div class="flex items-center gap-2">
+                    <i class="fa-solid fa-stopwatch text-amber-200"></i>
+                    <h3 class="font-bold text-sm">Simulador de Tiempo Asistencial</h3>
+                </div>
+                <button onclick="closeModal('modalSimTime')" class="text-amber-100 hover:text-white">
+                    <i class="fa-solid fa-xmark text-lg"></i>
+                </button>
+            </div>
+            <div class="p-5 space-y-4">
+                <p class="text-xs text-slate-600">
+                    Esta herramienta te permite simular cualquier fecha y hora para probar cómo el sistema calcula los plazos de 72 horas y el corte del <strong>Día 10 a las 00:00 horas</strong>.
+                </p>
+                <div>
+                    <label class="block text-xs font-bold text-slate-700 mb-1">Fecha y Hora a Simular:</label>
+                    <input type="datetime-local" id="simTimeInput" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs">
+                </div>
+                <div class="flex gap-2">
+                    <button onclick="applySimTimePreset(8)" class="flex-1 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded text-[11px] font-medium">
+                        Día 8 (48h al tope)
+                    </button>
+                    <button onclick="applySimTimePreset(10)" class="flex-1 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded text-[11px] font-medium">
+                        Día 10 (00:00h Tope)
+                    </button>
+                </div>
+                <div class="pt-2 border-t border-slate-100 flex justify-between">
+                    <button onclick="resetSimTime()" class="text-xs text-slate-600 hover:underline">Restablecer a Hoy</button>
+                    <button onclick="saveSimTime()" class="px-4 py-1.5 text-xs bg-amber-600 hover:bg-amber-700 text-white font-semibold rounded-lg shadow-sm">Aplicar Simulación</button>
+                </div>
+            </div>
+        </div>
+    <!-- ============================================================== -->
+    <!-- MODAL 5: CAMBIAR MI PIN PERSONAL -->
+    <!-- ============================================================== -->
+    <div id="modalChangePin" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+        <div class="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-sm overflow-hidden">
+            <div class="bg-indigo-900 text-white p-4 flex justify-between items-center">
+                <div class="flex items-center gap-2">
+                    <i class="fa-solid fa-key text-sky-400"></i>
+                    <h3 class="font-bold text-sm">Cambiar Mi PIN de Acceso</h3>
+                </div>
+                <button onclick="closeModal('modalChangePin')" class="text-slate-400 hover:text-white">
+                    <i class="fa-solid fa-xmark text-lg"></i>
+                </button>
+            </div>
+            <form onsubmit="handleChangePinSubmit(event)" class="p-5 space-y-4">
+                <p class="text-xs text-slate-500">
+                    Ingresa tu PIN actual y define tu nueva clave privada personal (mínimo 4 caracteres).
+                </p>
+                <div>
+                    <label class="block text-xs font-bold text-slate-700 mb-1">PIN Actual:</label>
+                    <input type="password" id="changeOldPin" required placeholder="Tu PIN actual" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none">
+                </div>
+                <div>
+                    <label class="block text-xs font-bold text-slate-700 mb-1">Nuevo PIN:</label>
+                    <input type="password" id="changeNewPin" required placeholder="Nuevo PIN (ej. 4 dígitos)" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none">
+                </div>
+                <div>
+                    <label class="block text-xs font-bold text-slate-700 mb-1">Confirmar Nuevo PIN:</label>
+                    <input type="password" id="changeConfirmPin" required placeholder="Repite el nuevo PIN" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none">
+                </div>
+                <div id="changePinErrorMsg" class="hidden text-xs text-rose-600 font-semibold"></div>
+                <div id="changePinSuccessMsg" class="hidden text-xs text-emerald-600 font-semibold"></div>
+                <button type="submit" class="w-full py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg text-xs transition shadow-sm">
+                    Guardar Nuevo PIN
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Scripts de la aplicación -->
+    <script src="/static/js/app.js?v=2.1"></script>
+</body>
+</html>

@@ -1,0 +1,171 @@
+/* styles.css - Estilos especializados para la IPRESS */
+
+/* Animación sutil de pulso para alertas */
+@keyframes softPulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.85; transform: scale(1.02); }
+}
+
+.animate-soft-pulse {
+    animation: softPulse 2s infinite ease-in-out;
+}
+
+/* Sello oficial de Aprobación */
+.approval-seal {
+    background: radial-gradient(circle, #fef08a 0%, #facc15 70%, #ca8a04 100%);
+    box-shadow: 0 0 15px rgba(234, 179, 8, 0.4);
+}
+
+/* Matriz de Turnos: Celdas de la tabla */
+.matrix-cell {
+    width: 38px;
+    min-width: 38px;
+    max-width: 38px;
+    height: 48px;
+    padding: 2px !important;
+    text-align: center;
+    vertical-align: middle;
+    transition: all 0.15s ease;
+}
+
+/* Fila activa del médico logueado */
+.doctor-row-active {
+    background-color: #f0f7ff !important;
+}
+
+.doctor-row-active td:first-child,
+.doctor-row-active td:nth-child(2) {
+    border-left: 4px solid #2563eb !important;
+}
+
+.doctor-cell-editable {
+    cursor: pointer;
+}
+
+.doctor-cell-editable:hover {
+    filter: brightness(0.92);
+    transform: scale(0.98);
+}
+
+/* Celdas de otros médicos (protegidas contra edición) */
+.doctor-cell-locked {
+    cursor: not-allowed;
+}
+
+.doctor-cell-locked:hover {
+    background-color: rgba(239, 68, 68, 0.08) !important;
+}
+
+/* Badges de turnos */
+.shift-badge {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+    border-radius: 6px;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 1.1;
+    border: 1px solid transparent;
+}
+
+.shift-12h {
+    background-color: #fef3c7;
+    color: #92400e;
+    border-color: #fcd34d;
+    box-shadow: 0 1px 2px rgba(245, 158, 11, 0.15);
+}
+
+.shift-M-TU {
+    background-color: #ffedd5;
+    color: #9a3412;
+    border-color: #fdba74;
+}
+
+.shift-M-CE {
+    background-color: #dbeafe;
+    color: #1e40af;
+    border-color: #93c5fd;
+}
+
+.shift-M-TS {
+    background-color: #d1fae5;
+    color: #065f46;
+    border-color: #6ee7b7;
+}
+
+.shift-T-TU {
+    background-color: #fed7aa;
+    color: #7c2d12;
+    border-color: #fb923c;
+}
+
+.shift-T-CE {
+    background-color: #cffafe;
+    color: #155e75;
+    border-color: #67e8f9;
+}
+
+.shift-DES {
+    background-color: #f3e8ff;
+    color: #6b21a8;
+    border-color: #d8b4fe;
+    font-style: italic;
+}
+
+.shift-empty {
+    color: #cbd5e1;
+}
+
+/* Indicadores de fin de semana y feriado */
+.col-holiday {
+    background-color: #fff1f2 !important;
+}
+
+.col-sunday {
+    background-color: #f1f5f9 !important;
+}
+
+.col-saturday {
+    background-color: #f8fafc !important;
+}
+
+/* Scrollbar estilizado para la matriz */
+#matrixContainer::-webkit-scrollbar {
+    height: 8px;
+}
+#matrixContainer::-webkit-scrollbar-track {
+    background: #f1f5f9;
+    border-radius: 4px;
+}
+#matrixContainer::-webkit-scrollbar-thumb {
+    background: #cbd5e1;
+    border-radius: 4px;
+}
+#matrixContainer::-webkit-scrollbar-thumb:hover {
+    background: #94a3b8;
+}
+
+/* Estilos de Impresión */
+@media print {
+    header, footer, .no-print, button, #approvalBanner button {
+        display: none !important;
+    }
+    body {
+        background: white !important;
+        color: black !important;
+    }
+    main {
+        max-width: 100% !important;
+        padding: 0 !important;
+        margin: 0 !important;
+    }
+    #matrixContainer {
+        overflow: visible !important;
+    }
+    table {
+        font-size: 8px !important;
+    }
+}
