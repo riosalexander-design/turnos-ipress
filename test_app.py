@@ -23,7 +23,8 @@ from scheduler_engine import (
     get_doctor_quota_summary,
     get_daily_coverage,
     detect_discrepancies,
-    validate_and_approve_schedule
+    validate_and_approve_schedule,
+    reopen_schedule
 )
 from exporter import generate_excel_schedule
 import app as flask_app
@@ -169,6 +170,42 @@ class TestIPRESSScheduling(unittest.TestCase):
             self.assertEqual(row["is_proposal"], 1)
 
         print("[OK] Test 7: El corte automatico preservo al 100% las propuestas ingresadas por los medicos.")
+
+    def test_08_admin_reopen_schedule(self):
+        """Verifica que solo el ADMIN pueda reabrir un horario previamente aprobado."""
+        year, month = 2026, 10
+        # Aprobar primero
+        validate_and_approve_schedule(year, month, "Jefatura Médica IPRESS")
+        with get_connection() as conn:
+            stat = conn.execute("SELECT is_approved FROM schedule_status WHERE year = ? AND month = ?", (year, month)).fetchone()
+            self.assertEqual(stat["is_approved"], 1)
+
+        client = flask_app.app.test_client()
+
+        # 1. Intento de reabrir por un médico no admin (Dra. Caldas, role='doctor') -> 403
+        with client.session_transaction() as sess:
+            sess["user_id"] = 1
+            sess["user_name"] = "Caldas Pacsi, Lily Katherine"
+            sess["user_role"] = "doctor"
+
+        res_forbidden = client.post("/api/schedule/reopen", json={"year": year, "month": month})
+        self.assertEqual(res_forbidden.status_code, 403)
+
+        # 2. Intento de reabrir por ADMIN (role='admin') -> 200 OK
+        with client.session_transaction() as sess:
+            sess["user_id"] = 6
+            sess["user_name"] = "Jefatura Médica IPRESS"
+            sess["user_role"] = "admin"
+
+        res_ok = client.post("/api/schedule/reopen", json={"year": year, "month": month})
+        self.assertEqual(res_ok.status_code, 200)
+
+        # Verificar en base de datos que el horario quedó reabierto (is_approved=0)
+        with get_connection() as conn:
+            stat_after = conn.execute("SELECT is_approved FROM schedule_status WHERE year = ? AND month = ?", (year, month)).fetchone()
+            self.assertEqual(stat_after["is_approved"], 0)
+
+        print("[OK] Test 8: Funcionalidad de reapertura de horario verificada con proteccion estricta por rol ADMIN.")
 
 if __name__ == "__main__":
     unittest.main()

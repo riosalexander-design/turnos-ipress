@@ -18,6 +18,7 @@ from scheduler_engine import (
     apply_discrepancy_alternative,
     auto_assign_missing_shifts_day10,
     validate_and_approve_schedule,
+    reopen_schedule,
     calculate_deadline
 )
 from exporter import generate_excel_schedule
@@ -375,6 +376,17 @@ def api_validate_approval():
     
     result = validate_and_approve_schedule(year, month, approved_by)
     return jsonify(result)
+
+@app.route("/api/schedule/reopen", methods=["POST"])
+def api_reopen_schedule():
+    """Reabre el horario para permitir modificaciones tras haber sido aprobado (Solo Jefatura/ADMIN)."""
+    if session.get("user_role") != "admin":
+        return jsonify({"success": False, "error": "ACCESO DENEGADO: Solo la Jefatura Médica (ADMIN) puede reabrir el horario."}), 403
+    data = request.json or {}
+    year = int(data.get("year"))
+    month = int(data.get("month"))
+    reopen_schedule(year, month, session.get("user_name", "Jefatura Médica IPRESS"))
+    return jsonify({"success": True, "message": "Horario reabierto con éxito para modificaciones."})
 
 # -------------------------------------------------------------
 # EXPORTACIÓN A EXCEL (.xlsx)

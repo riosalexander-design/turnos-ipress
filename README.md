@@ -30,10 +30,15 @@ Sistema web para la planificación, conciliación y aprobación mensual del rol 
   - Obligación de realizar **5 turnos de 12 horas al mes** (incluyendo el viernes).
   - Cada vez que realice un turno de 12 horas, **el día inmediatamente posterior descansa 12 horas de manera obligatoria** (`DES`).
 
-### 3. Identificación Individual y Seguridad
-- Cada médico ingresa con su **CMP** y **PIN** (por defecto `1234`).
-- **Aislamiento Estricto:** Cada médico solo puede programar o modificar **su propia fila**. Las filas de los demás colegas se muestran en modo solo lectura para evitar modificaciones cruzadas.
-- Perfil de **Jefatura Médica** (`ADMIN` / PIN `admin123`) para auditoría, cierre y aprobación.
+### 3. Identificación Individual, Seguridad y Perfil Jefatura (ADMIN)
+- Cada médico ingresa con su **CMP** y su **PIN confidencial**.
+- **Aislamiento Estricto:** Cada médico cirujano solo puede programar o modificar **su propia fila**. Las filas de los demás colegas se muestran en modo solo lectura.
+- **Perfil Jefatura Médica (ADMIN / PIN `admin2026`):**
+  - **Modo Supervisión:** Puede seleccionar y modificar la programación asistencial de cualquier médico cirujano para contingencias o coberturas especiales.
+  - **Control de Aprobación y Reapertura:** Emisión oficial del certificado "Horario Aprobado" con hash de integridad, o reapertura del rol para modificaciones posteriores.
+  - **Ejecución del Corte Día 10:** Disparar el autocompletado normativo de turnos.
+  - **Auditoría en Tiempo Real:** Visualización del historial inmutable de acciones (`audit_logs`) con fecha, hora, usuario y detalle de cambios.
+  - **Gestión de Personal y Seguridad:** Visualización de nómina y restablecimiento de PINes para médicos que hayan extraviado su clave.
 
 ### 4. Corte del Día 10 a las 00:00 Horas y Asignación Automática
 - Los médicos pueden auto-proponer sus turnos hasta el **Día 10 a las 00:00 horas**.

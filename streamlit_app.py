@@ -6,6 +6,7 @@ Compatible 100% con Streamlit Community Cloud (share.streamlit.io).
 
 import io
 from datetime import datetime
+import pandas as pd
 import streamlit as st
 from database import init_db, get_connection, hash_pin, log_audit
 from holidays_pe import get_month_info
@@ -17,6 +18,7 @@ from scheduler_engine import (
     apply_discrepancy_alternative,
     auto_assign_missing_shifts_day10,
     validate_and_approve_schedule,
+    reopen_schedule,
     calculate_deadline
 )
 from exporter import generate_excel_schedule
@@ -236,22 +238,39 @@ st.markdown("---")
 # -------------------------------------------------------------------
 # BARRA DE ACCIONES
 # -------------------------------------------------------------------
+is_admin_user = (st.session_state["user"] is not None and st.session_state["user"].get("role") == "admin")
 b_col1, b_col2, b_col3, b_col4 = st.columns([2, 2, 2, 2])
 
 with b_col1:
     if st.button("🪄 Corte Día 10: Asignar Automáticamente", use_container_width=True, type="secondary"):
-        auto_assign_missing_shifts_day10(selected_year, selected_month)
-        st.success("¡Turnos autocompletados con éxito respetando las propuestas existentes!")
-        st.rerun()
+        if not is_admin_user:
+            st.warning("🔒 Acción restringida: Solo la Jefatura Médica (ADMIN) puede ejecutar el corte institucional del Día 10.")
+        else:
+            auto_assign_missing_shifts_day10(selected_year, selected_month)
+            log_audit(st.session_state["user"]["id"], st.session_state["user"]["name"], "Corte Día 10", f"Autocompletado de turnos asistenciales para {selected_month}/{selected_year}")
+            st.success("¡Turnos autocompletados con éxito respetando las propuestas existentes!")
+            st.rerun()
 
 with b_col2:
-    if st.button("✅ Validar y Aprobar Horario", use_container_width=True, type="primary"):
-        val_res = validate_and_approve_schedule(selected_year, selected_month, st.session_state["user"]["name"] if st.session_state["user"] else "Jefatura Médica IPRESS")
-        if val_res["is_approved"]:
-            st.success(f"¡{val_res['message']}! Código: #{val_res['approval_hash']}")
-            st.rerun()
-        else:
-            st.error(f"No se puede aprobar aún: {val_res['reason']}")
+    if approval_status.get("is_approved"):
+        if st.button("🔄 Reabrir Horario (Jefatura)", use_container_width=True, type="secondary"):
+            if not is_admin_user:
+                st.warning("🔒 Acción restringida: Solo la Jefatura Médica (ADMIN) puede reabrir un horario previamente aprobado.")
+            else:
+                reopen_schedule(selected_year, selected_month, st.session_state["user"]["name"])
+                st.success("¡Horario reabierto con éxito para modificaciones asistenciales!")
+                st.rerun()
+    else:
+        if st.button("✅ Validar y Aprobar Horario", use_container_width=True, type="primary"):
+            if not is_admin_user:
+                st.warning("🔒 Acción restringida: Solo la Jefatura Médica (ADMIN) puede certificar y aprobar oficialmente el horario.")
+            else:
+                val_res = validate_and_approve_schedule(selected_year, selected_month, st.session_state["user"]["name"])
+                if val_res["is_approved"]:
+                    st.success(f"¡{val_res['message']}! Código: #{val_res['approval_hash']}")
+                    st.rerun()
+                else:
+                    st.error(f"No se puede aprobar aún: {val_res['reason']}")
 
 with b_col3:
     excel_stream = generate_excel_schedule(selected_year, selected_month, "IPRESS SALUD PERÚ")
@@ -383,21 +402,46 @@ html.append("</table></div>")
 st.markdown("".join(html), unsafe_allow_html=True)
 
 # -------------------------------------------------------------------
-# PANEL DE EDICIÓN DE TURNOS (AISLAMIENTO ESTRICTO POR MÉDICO)
+# PANEL DE EDICIÓN DE TURNOS (AISLAMIENTO ESTRICTO POR MÉDICO / MODO JEFATURA)
 # -------------------------------------------------------------------
 st.markdown("---")
 if st.session_state["user"] is None:
-    st.info("🔒 Para ingresar o modificar tus turnos, inicia sesión con tu CMP y PIN en la barra lateral izquierda.")
+    st.info("🔒 Para ingresar o modificar turnos, inicia sesión con tu CMP y PIN en la barra lateral izquierda.")
 else:
     u = st.session_state["user"]
-    st.subheader(f"✍️ Programar mi Propuesta de Turnos — {u['name']}")
-    
+    is_admin = (u.get("role") == "admin")
+
+    if is_admin:
+        st.subheader("🛠️ Panel de Modificación Asistencial — Modo Jefatura Médica")
+        st.caption("Como Administrador / Jefatura Médica, tienes autorización para asignar, modificar o liberar turnos de cualquier médico cirujano de la IPRESS.")
+        
+        target_doc_id = st.selectbox(
+            "Seleccionar Médico a Programar:",
+            [doc["id"] for doc in doctors_only],
+            format_func=lambda did: next((f"{d['name']} ({d['condition']} - CMP: {d['cmp']})" for d in doctors_only if d["id"] == did), str(did)),
+            key="admin_target_doc_select"
+        )
+        target_doc = next((d for d in doctors_only if d["id"] == target_doc_id), doctors_only[0])
+        target_id = target_doc["id"]
+        target_name = target_doc["name"]
+    else:
+        st.subheader(f"✍️ Programar mi Propuesta de Turnos — {u['name']}")
+        st.caption(f"CMP: {u['cmp']} | Condición: {u['condition']} (Modo de edición protegido de tu propia fila)")
+        target_id = u["id"]
+        target_name = u["name"]
+
     ed_col1, ed_col2, ed_col3, ed_col4 = st.columns([1, 1.5, 2, 1.5])
     
     with ed_col1:
         edit_day = st.selectbox("Selecciona Día:", [d["day"] for d in days])
         d_info = days[edit_day - 1]
         st.caption(f"{d_info['weekday_name']}{' (FERIADO)' if d_info['is_holiday'] else ''}")
+        # Mostrar turno actual asignado a este médico
+        current_shift_info = doc_summary.get(target_id, {}).get("days", {}).get(edit_day)
+        if current_shift_info:
+            st.info(f"Asignado: **{current_shift_info['shift_period']}-{current_shift_info['service']}**")
+        else:
+            st.caption("Sin turno asignado actualmente.")
 
     with ed_col2:
         period_choice = st.radio(
@@ -439,12 +483,13 @@ else:
     with ed_col4:
         st.write("")
         st.write("")
-        if st.button("💾 Guardar Mi Turno", use_container_width=True, type="primary"):
+        btn_label = "💾 Guardar Turno (Jefatura)" if is_admin else "💾 Guardar Mi Turno"
+        if st.button(btn_label, use_container_width=True, type="primary"):
             with get_connection() as conn:
                 if sp_val == "CLEAR":
                     conn.execute("DELETE FROM shifts WHERE year = ? AND month = ? AND day = ? AND doctor_id = ?",
-                                 (selected_year, selected_month, edit_day, u["id"]))
-                    log_audit(u["id"], u["name"], "Eliminó turno", f"Día {edit_day}", conn=conn)
+                                 (selected_year, selected_month, edit_day, target_id))
+                    log_audit(u["id"], u["name"], "Eliminó turno", f"Día {edit_day} para {target_name}", conn=conn)
                 else:
                     conn.execute("""
                         INSERT INTO shifts (year, month, day, shift_period, service, doctor_id, is_proposal, updated_at)
@@ -454,10 +499,83 @@ else:
                             service = excluded.service,
                             is_proposal = 1,
                             updated_at = CURRENT_TIMESTAMP
-                    """, (selected_year, selected_month, edit_day, sp_val, srv_val, u["id"]))
-                    log_audit(u["id"], u["name"], "Guardó propuesta", f"Día {edit_day} {sp_val}-{srv_val}", conn=conn)
+                    """, (selected_year, selected_month, edit_day, sp_val, srv_val, target_id))
+                    log_audit(u["id"], u["name"], "Guardó turno", f"Día {edit_day} {sp_val}-{srv_val} para {target_name}", conn=conn)
                 conn.commit()
-            st.success(f"Día {edit_day} actualizado.")
+            st.success(f"Día {edit_day} para {target_name} actualizado exitosamente.")
             st.rerun()
+
+# -------------------------------------------------------------------
+# PANELES EXCLUSIVOS DE ADMINISTRACIÓN / JEFATURA
+# -------------------------------------------------------------------
+if st.session_state["user"] and st.session_state["user"].get("role") == "admin":
+    st.markdown("---")
+    st.subheader("👑 Panel de Control de Jefatura Médica")
+
+    adm_tab1, adm_tab2 = st.tabs(["🛡️ Auditoría y Trazabilidad de Acciones", "👥 Gestión de Personal y PINes"])
+
+    with adm_tab1:
+        st.markdown("##### Registro de Auditoría en Tiempo Real (`audit_logs`)")
+        st.caption("Historial inmutable de inicios de sesión, cambios de turnos, resoluciones y aprobaciones.")
+        with get_connection() as conn:
+            logs = conn.execute("""
+                SELECT timestamp, doctor_name, action, details
+                FROM audit_logs
+                ORDER BY id DESC
+                LIMIT 50
+            """).fetchall()
+        
+        if logs:
+            df_logs = pd.DataFrame([dict(row) for row in logs])
+            df_logs.rename(columns={
+                "timestamp": "Fecha y Hora",
+                "doctor_name": "Usuario / Médico",
+                "action": "Acción Realizada",
+                "details": "Detalles"
+            }, inplace=True)
+            st.dataframe(df_logs, use_container_width=True, hide_index=True)
+        else:
+            st.info("No hay registros de auditoría aún.")
+
+    with adm_tab2:
+        st.markdown("##### Nómina Médica Asistencial")
+        doc_rows = []
+        for d in doctors_list:
+            doc_rows.append({
+                "ID": d["id"],
+                "Médico Cirujano": d["name"],
+                "Condición": d["condition"],
+                "CMP": d["cmp"],
+                "Rol": d["role"].capitalize()
+            })
+        st.dataframe(pd.DataFrame(doc_rows), use_container_width=True, hide_index=True)
+
+        st.markdown("##### 🔑 Restablecer PIN de Acceso a un Médico")
+        st.caption("Si un médico cirujano olvida su clave, la Jefatura puede asignarle un nuevo PIN temporal.")
+        
+        c_p1, c_p2, c_p3 = st.columns([2, 1.5, 1])
+        with c_p1:
+            rst_doc_id = st.selectbox(
+                "Seleccionar Médico para Reset de PIN:",
+                [d["id"] for d in doctors_only],
+                format_func=lambda did: next((f"{d['name']} (CMP: {d['cmp']})" for d in doctors_only if d["id"] == did), str(did)),
+                key="rst_doc_select"
+            )
+        with c_p2:
+            rst_pin = st.text_input("Nuevo PIN temporal (mín 4 dígitos):", value="1234", key="rst_pin_input")
+        with c_p3:
+            st.write("")
+            st.write("")
+            if st.button("Restablecer PIN", key="btn_rst_pin", type="primary"):
+                if len(rst_pin) < 4:
+                    st.error("El PIN debe tener al menos 4 dígitos.")
+                else:
+                    target_d = next(d for d in doctors_only if d["id"] == rst_doc_id)
+                    with get_connection() as conn:
+                        conn.execute("UPDATE doctors SET pin_hash = ? WHERE id = ?", (hash_pin(rst_pin), rst_doc_id))
+                        conn.commit()
+                        log_audit(u["id"], u["name"], "Reset de PIN", f"Se restableció el PIN de {target_d['name']} (CMP {target_d['cmp']}) a '{rst_pin}'", conn=conn)
+                    st.success(f"¡PIN de {target_d['name']} restablecido exitosamente a: {rst_pin}!")
+                    st.rerun()
 
 st.caption("IPRESS Salud Perú © 2026 - Sistema de Programación Asistencial Oficial.")

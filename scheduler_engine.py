@@ -683,3 +683,21 @@ def validate_and_approve_schedule(year: int, month: int, approved_by_name: str =
             "approval_hash": approval_token,
             "message": "¡HORARIO APROBADO! La programación mensual cumple con todas las normativas asistenciales."
         }
+
+def reopen_schedule(year: int, month: int, reopened_by_name: str = "Jefatura Médica IPRESS") -> bool:
+    """
+    Reabre una programación mensual previamente aprobada para permitir modificaciones extraordinarias.
+    Solo puede ser ejecutada por la Jefatura Médica (ADMIN).
+    """
+    with get_connection() as conn:
+        conn.execute("""
+            UPDATE schedule_status
+            SET is_approved = 0,
+                approved_at = NULL,
+                approved_by = NULL,
+                approval_hash = NULL
+            WHERE year = ? AND month = ?
+        """, (year, month))
+        conn.commit()
+        log_audit(0, reopened_by_name, "Reapertura de Horario", f"Se revocó la aprobación del rol de {month}/{year} para modificaciones asistenciales.", conn=conn)
+    return True
