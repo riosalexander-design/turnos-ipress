@@ -19,7 +19,10 @@ from scheduler_engine import (
     auto_assign_missing_shifts_day10,
     validate_and_approve_schedule,
     reopen_schedule,
-    calculate_deadline
+    calculate_deadline,
+    record_doctor_shift,
+    approve_day_discrepancy,
+    approve_all_day_discrepancies
 )
 from exporter import generate_excel_schedule
 
@@ -221,57 +224,39 @@ def api_get_schedule():
 @app.route("/api/shifts/update", methods=["POST"])
 def api_update_shift():
     """
-    Guarda o actualiza el turno propuesto por un médico.
-    CONTROL ESTRICTO: Un médico solo puede actualizar su propia fila a menos que sea Admin.
+    Guarda o actualiza el turno propuesto por un médico o el Administrador.
+    CONTROL ESTRICTO:
+    - Un médico solo puede actualizar su propia fila.
+    - Los domingos están bloqueados para los médicos (solo Admin).
+    - Todo turno de 12h asigna automáticamente DES al día siguiente.
     """
     data = request.json or {}
     year = int(data.get("year"))
     month = int(data.get("month"))
     day = int(data.get("day"))
     doctor_id = int(data.get("doctor_id"))
-    shift_period = data.get("shift_period") # 'M', 'T', '12h', 'DES', 'LIBRE', 'CLEAR'
-    service = data.get("service", "")       # 'TU', 'CE', 'TS', 'TU+CE', etc.
+    shift_period = data.get("shift_period")
+    service = data.get("service", "")
 
-    # Verificación de identidad y permisos
     current_user_id = session.get("user_id")
-    current_user_role = session.get("user_role")
+    current_user_name = session.get("user_name", "")
+    current_user_role = session.get("user_role", "doctor")
 
-    if not current_user_id:
-        return jsonify({"success": False, "error": "Debe iniciar sesión para realizar cambios."}), 401
+    res = record_doctor_shift(
+        year=year,
+        month=month,
+        day=day,
+        doctor_id=doctor_id,
+        shift_period=shift_period,
+        service=service,
+        user_id=current_user_id,
+        user_name=current_user_name,
+        user_role=current_user_role
+    )
+    if not res["success"]:
+        return jsonify({"success": False, "error": res["error"]}), res.get("status_code", 400)
 
-    if current_user_role != "admin" and current_user_id != doctor_id:
-        return jsonify({
-            "success": False,
-            "error": "ACCESO DENEGADO: No tiene autorización para modificar la propuesta de otro médico."
-        }), 403
-
-    with get_connection() as conn:
-        doc = conn.execute("SELECT name FROM doctors WHERE id = ?", (doctor_id,)).fetchone()
-        doc_name = doc["name"] if doc else f"Dr. ID {doctor_id}"
-
-        if shift_period in ("CLEAR", "", None):
-            conn.execute("DELETE FROM shifts WHERE year = ? AND month = ? AND day = ? AND doctor_id = ?",
-                         (year, month, day, doctor_id))
-            log_audit(current_user_id, session.get("user_name", ""), "Eliminó turno", f"Día {day} para {doc_name}", conn=conn)
-        else:
-            conn.execute("""
-                INSERT INTO shifts (year, month, day, shift_period, service, doctor_id, is_proposal, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
-                ON CONFLICT(year, month, day, doctor_id) DO UPDATE SET
-                    shift_period = excluded.shift_period,
-                    service = excluded.service,
-                    is_proposal = 1,
-                    updated_at = CURRENT_TIMESTAMP
-            """, (year, month, day, shift_period, service, doctor_id))
-            log_audit(current_user_id, session.get("user_name", ""), "Actualizó turno",
-                      f"Día {day}: {shift_period} ({service}) para {doc_name}", conn=conn)
-
-        conn.commit()
-
-    # Sincronizar discrepancias tras el cambio
-    sync_discrepancies_db(year, month, get_current_time())
-
-    return jsonify({"success": True})
+    return jsonify({"success": True, "message": res["message"]})
 
 # -------------------------------------------------------------
 # RUTAS DE RESOLUCIÓN DE DISCREPANCIAS
@@ -387,6 +372,22 @@ def api_reopen_schedule():
     month = int(data.get("month"))
     reopen_schedule(year, month, session.get("user_name", "Jefatura Médica IPRESS"))
     return jsonify({"success": True, "message": "Horario reabierto con éxito para modificaciones."})
+
+@app.route("/api/schedule/approve-day", methods=["POST"])
+def api_approve_day_discrepancy():
+    """Aprueba un día con discrepancia de cobertura de servicios (Exclusivo para el Administrador)."""
+    if session.get("user_role") != "admin":
+        return jsonify({
+            "success": False,
+            "error": "ACCESO DENEGADO: Solo el Administrador puede aprobar el día en el que exista discrepancia de cobertura de servicios."
+        }), 403
+    data = request.json or {}
+    year = int(data.get("year"))
+    month = int(data.get("month"))
+    day = int(data.get("day"))
+    notes = data.get("notes", "")
+    res = approve_day_discrepancy(year, month, day, session.get("user_name", "Jefatura Médica IPRESS"), notes)
+    return jsonify(res)
 
 # -------------------------------------------------------------
 # EXPORTACIÓN A EXCEL (.xlsx)

@@ -117,6 +117,19 @@ def init_db():
             )
         """)
 
+        # Tabla de Excepciones Diarias Aprobadas por el Administrador
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS approved_day_exceptions (
+                year INTEGER NOT NULL,
+                month INTEGER NOT NULL,
+                day INTEGER NOT NULL,
+                approved_by TEXT NOT NULL,
+                approved_at TEXT NOT NULL,
+                notes TEXT,
+                PRIMARY KEY(year, month, day)
+            )
+        """)
+
         conn.commit()
 
         # Precargar los 5 médicos oficiales con PINes independientes únicos
@@ -138,12 +151,11 @@ def init_db():
                     VALUES (?, ?, ?, ?, ?)
                 """, (name, cond, cmp_num, hash_pin(pin), role))
             else:
-                # Actualizar al PIN independiente correspondiente
                 cursor.execute("""
                     UPDATE doctors
-                    SET pin_hash = ?, condition = ?, name = ?
+                    SET condition = ?, name = ?
                     WHERE cmp = ?
-                """, (hash_pin(pin), cond, name, cmp_num))
+                """, (cond, name, cmp_num))
         
         conn.commit()
 

@@ -171,9 +171,9 @@ def generate_excel_schedule(year: int, month: int, ipress_name: str = "IPRESS SA
                 srv = shift_info["service"]
                 
                 if sp == "12h":
-                    cell.value = "12h"
+                    cell.value = f"12h ({srv})"
                     cell.fill = PatternFill(start_color=SHIFT_COLORS["12h"]["fill"], end_color=SHIFT_COLORS["12h"]["fill"], fill_type="solid")
-                    cell.font = Font(size=9, bold=True, color=SHIFT_COLORS["12h"]["font"])
+                    cell.font = Font(size=8, bold=True, color=SHIFT_COLORS["12h"]["font"])
                 elif sp == "DES":
                     cell.value = "DES"
                     cell.fill = PatternFill(start_color=SHIFT_COLORS["DES"]["fill"], end_color=SHIFT_COLORS["DES"]["fill"], fill_type="solid")
@@ -212,7 +212,7 @@ def generate_excel_schedule(year: int, month: int, ipress_name: str = "IPRESS SA
     # 4. Filas de Validación de Cobertura Diaria (Semáforo de Seguridad)
     # Fila Mañana
     ws.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=4)
-    ws.cell(row=current_row, column=1, value="Médicos en Turno Mañana (Mínimo 2)").font = Font(bold=True, size=9, color="1F4E79")
+    ws.cell(row=current_row, column=1, value="Cobertura Mañana (TU, CE, TS)").font = Font(bold=True, size=9, color="1F4E79")
     ws.cell(row=current_row, column=1).alignment = Alignment(horizontal="right", vertical="center")
     
     for d in range(1, num_days + 1):
@@ -224,7 +224,7 @@ def generate_excel_schedule(year: int, month: int, ipress_name: str = "IPRESS SA
         cell.font = Font(bold=True, size=9)
         if cov["is_sunday"]:
             cell.fill = PatternFill(start_color=COLOR_WEEKEND_SUN, end_color=COLOR_WEEKEND_SUN, fill_type="solid")
-        elif cov["morning_count"] >= 2:
+        elif cov.get("all_morning_services_covered") or cov.get("is_admin_approved_day"):
             cell.fill = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid") # Verde OK
         else:
             cell.fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid") # Rojo alerta
@@ -234,7 +234,7 @@ def generate_excel_schedule(year: int, month: int, ipress_name: str = "IPRESS SA
 
     # Fila Tarde
     ws.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=4)
-    ws.cell(row=current_row, column=1, value="Médicos en Turno Tarde (Mínimo 2)").font = Font(bold=True, size=9, color="1F4E79")
+    ws.cell(row=current_row, column=1, value="Cobertura Tarde (TU, CE)").font = Font(bold=True, size=9, color="1F4E79")
     ws.cell(row=current_row, column=1).alignment = Alignment(horizontal="right", vertical="center")
 
     for d in range(1, num_days + 1):
@@ -246,7 +246,7 @@ def generate_excel_schedule(year: int, month: int, ipress_name: str = "IPRESS SA
         cell.font = Font(bold=True, size=9)
         if cov["is_sunday"]:
             cell.fill = PatternFill(start_color=COLOR_WEEKEND_SUN, end_color=COLOR_WEEKEND_SUN, fill_type="solid")
-        elif cov["afternoon_count"] >= 2:
+        elif cov.get("all_afternoon_services_covered") or cov.get("is_admin_approved_day"):
             cell.fill = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid") # Verde OK
         else:
             cell.fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid") # Rojo alerta
@@ -258,12 +258,12 @@ def generate_excel_schedule(year: int, month: int, ipress_name: str = "IPRESS SA
     ws.cell(row=current_row, column=2, value="LEYENDA DE SERVICIOS Y TURNOS:").font = Font(bold=True, size=9)
     legends = [
         ("M-TU", "Mañana - Tópico Urgencias", SHIFT_COLORS["M-TU"]["fill"]),
-        ("M-CE", "Mañana - Consultorio Externo", SHIFT_COLORS["M-CE"]["fill"]),
-        ("M-TS", "Mañana - Telesalud", SHIFT_COLORS["M-TS"]["fill"]),
+        ("M-CE", "Mañana - Consultorio de Medicina", SHIFT_COLORS["M-CE"]["fill"]),
+        ("M-TS", "Mañana - Telesalud/TBC/MCI", SHIFT_COLORS["M-TS"]["fill"]),
         ("T-TU", "Tarde - Tópico Urgencias", SHIFT_COLORS["T-TU"]["fill"]),
-        ("T-CE", "Tarde - Consultorio Externo", SHIFT_COLORS["T-CE"]["fill"]),
+        ("T-CE", "Tarde - Consultorio de Medicina", SHIFT_COLORS["T-CE"]["fill"]),
         ("12h", "Turno 12h (Mañana + Tarde)", SHIFT_COLORS["12h"]["fill"]),
-        ("DES", "Descanso Obligatorio post-12h", SHIFT_COLORS["DES"]["fill"]),
+        ("DES", "Descanso de Guardia post-12h", SHIFT_COLORS["DES"]["fill"]),
     ]
     leg_col = 4
     for code, desc, fill_hex in legends:

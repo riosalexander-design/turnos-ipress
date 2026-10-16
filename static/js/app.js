@@ -463,7 +463,11 @@ function renderMatrix() {
                     return;
                 }
                 if (!canEditThisRow) {
-                    alert(`🚫 ACCESO DENEGADO - FILA BLOQUEADA:\n\nHas iniciado sesión como:\n${state.currentUser.name} (CMP ${state.currentUser.cmp})\n\nEsta fila pertenece a:\n${doc.name} (CMP ${doc.cmp})\n\nPor normativa de la IPRESS, ningún médico puede modificar la propuesta de otro colega.\nPara editar esta fila, debes cerrar sesión e ingresar con su respectivo CMP y PIN personal.`);
+                    alert(`🚫 ACCESO DENEGADO - FILA BLOQUEADA:\n\nHas iniciado sesión como:\n${state.currentUser.name} (CMP ${state.currentUser.cmp})\n\nEsta fila pertenece a:\n${doc.name} (CMP ${doc.cmp})\n\nPor normativa de la IPRESS, solo el propio médico o el Administrador pueden modificar esta fila.`);
+                    return;
+                }
+                if (d.is_sunday && !isCurAdmin) {
+                    alert(`🚫 DOMINGO BLOQUEADO:\n\nEl Día ${d.day} es Domingo. Los domingos están bloqueados para los médicos y solo pueden ser habilitados o modificados por el Administrador.`);
                     return;
                 }
                 openShiftEditModal(doc, d, shift);
@@ -491,29 +495,37 @@ function renderMatrix() {
         matrixBody.appendChild(tr);
     });
 
-    // 4. Filas de Cobertura Diaria (Semáforo de Seguridad: Mínimo 2 Médicos)
+    // 4. Filas de Cobertura Diaria por Servicios (Mañana: TU, CE, TS | Tarde: TU, CE)
     const covMRow = document.getElementById("coverageMorningRow");
     covMRow.innerHTML = `
         <td colspan="3" class="py-2 px-3 text-right text-[11px] text-blue-900 border-r border-slate-300">
-            Médicos Mañana (Mínimo 2):
+            Mañana (TU + CE + TS):
         </td>
     `;
 
     days.forEach(d => {
         const cov = coverage[d.day] || { morning_count: 0, morning_valid: false };
         const td = document.createElement("td");
-        td.className = "matrix-cell border-r border-slate-200 text-[11px] font-bold ";
+        td.className = "matrix-cell border-r border-slate-200 text-[10px] font-bold ";
         if (d.is_sunday) {
             td.classList.add("col-sunday", "text-slate-400");
             td.innerText = cov.morning_count || "-";
-        } else if (cov.morning_valid) {
+        } else if (cov.morning_all_services_ok) {
             td.className += "bg-emerald-100 text-emerald-800";
-            td.innerText = cov.morning_count;
-            td.title = `Mañana: ${cov.morning_count} médicos (Correcto >= 2)`;
+            td.innerText = `${cov.morning_count}✓`;
+            td.title = `Día ${d.day} Mañana: Cubiertos TU, CE y Telesalud/TBC/MCI (TS)`;
+        } else if (cov.is_admin_approved_day) {
+            td.className += "bg-amber-100 text-amber-900";
+            td.innerText = `${cov.morning_count} (Aprob)`;
+            td.title = `Día ${d.day} aprobado por Administrador (${cov.approved_by || 'ADMIN'})`;
         } else {
-            td.className += "bg-rose-200 text-rose-900 animate-pulse";
-            td.innerText = cov.morning_count;
-            td.title = `ALERTA: Solo ${cov.morning_count} médico(s) en Mañana. Se requieren al menos 2.`;
+            td.className += "bg-rose-200 text-rose-900 animate-pulse cursor-pointer";
+            td.innerText = `${cov.morning_count}⚠️`;
+            const missing = (cov.missing_morning_services || []).join(", ");
+            td.title = `ALERTA DÍA ${d.day}: Falta cubrir en Mañana: ${missing}. ${isCurAdmin ? 'Clic para aprobar este día como Administrador.' : 'Solo el Administrador puede aprobar este día.'}`;
+            if (isCurAdmin) {
+                td.onclick = () => approveDayDiscrepancy(d.day, cov.alert_message);
+            }
         }
         covMRow.appendChild(td);
     });
@@ -525,25 +537,33 @@ function renderMatrix() {
     const covTRow = document.getElementById("coverageAfternoonRow");
     covTRow.innerHTML = `
         <td colspan="3" class="py-2 px-3 text-right text-[11px] text-slate-700 border-r border-slate-300">
-            Médicos Tarde (Mínimo 2):
+            Tarde (TU + CE):
         </td>
     `;
 
     days.forEach(d => {
         const cov = coverage[d.day] || { afternoon_count: 0, afternoon_valid: false };
         const td = document.createElement("td");
-        td.className = "matrix-cell border-r border-slate-200 text-[11px] font-bold ";
+        td.className = "matrix-cell border-r border-slate-200 text-[10px] font-bold ";
         if (d.is_sunday) {
             td.classList.add("col-sunday", "text-slate-400");
             td.innerText = cov.afternoon_count || "-";
-        } else if (cov.afternoon_valid) {
+        } else if (cov.afternoon_all_services_ok) {
             td.className += "bg-emerald-100 text-emerald-800";
-            td.innerText = cov.afternoon_count;
-            td.title = `Tarde: ${cov.afternoon_count} médicos (Correcto >= 2)`;
+            td.innerText = `${cov.afternoon_count}✓`;
+            td.title = `Día ${d.day} Tarde: Cubiertos TU y CE`;
+        } else if (cov.is_admin_approved_day) {
+            td.className += "bg-amber-100 text-amber-900";
+            td.innerText = `${cov.afternoon_count} (Aprob)`;
+            td.title = `Día ${d.day} aprobado por Administrador (${cov.approved_by || 'ADMIN'})`;
         } else {
-            td.className += "bg-rose-200 text-rose-900 animate-pulse";
-            td.innerText = cov.afternoon_count;
-            td.title = `ALERTA: Solo ${cov.afternoon_count} médico(s) en Tarde. Se requieren al menos 2.`;
+            td.className += "bg-rose-200 text-rose-900 animate-pulse cursor-pointer";
+            td.innerText = `${cov.afternoon_count}⚠️`;
+            const missing = (cov.missing_afternoon_services || []).join(", ");
+            td.title = `ALERTA DÍA ${d.day}: Falta cubrir en Tarde: ${missing}. ${isCurAdmin ? 'Clic para aprobar este día como Administrador.' : 'Solo el Administrador puede aprobar este día.'}`;
+            if (isCurAdmin) {
+                td.onclick = () => approveDayDiscrepancy(d.day, cov.alert_message);
+            }
         }
         covTRow.appendChild(td);
     });
@@ -553,11 +573,33 @@ function renderMatrix() {
     }
 }
 
+async function approveDayDiscrepancy(day, alertMsg) {
+    if (!confirm(`⚠️ ALERTA DE COBERTURA DE SERVICIOS (Día ${day}):\n\n${alertMsg}\n\nComo Administrador, ¿deseas APROBAR este día con esta discrepancia de cobertura?`)) {
+        return;
+    }
+    try {
+        const res = await fetch("/api/schedule/approve-day", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ year: state.year, month: state.month, day: day, action: "approve" })
+        });
+        const data = await res.json();
+        if (data.success) {
+            showConfirmationToast(data.message);
+            await loadAll();
+        } else {
+            alert(data.error || "Solo el Administrador puede aprobar días con discrepancia.");
+        }
+    } catch (err) {
+        console.error("Error al aprobar día:", err);
+    }
+}
+
 function getShiftFullDescription(sp, srv, docName, day) {
     if (sp === "12h") return `Día ${day}: ${docName} - Turno 12h (${srv})`;
-    if (sp === "DES") return `Día ${day}: ${docName} - Descanso obligatorio post-12h`;
+    if (sp === "DES") return `Día ${day}: ${docName} - Descanso de guardia obligatorio post-12h`;
     const period = sp === "M" ? "Mañana" : "Tarde";
-    const serviceName = srv === "TU" ? "Tópico de Urgencias" : (srv === "CE" ? "Consultorio Externo" : "Telesalud");
+    const serviceName = srv === "TU" ? "Tópico de Urgencias" : (srv === "CE" ? "Consultorio de Medicina" : "Telesalud/TBC/MCI");
     return `Día ${day}: ${docName} - ${period} en ${serviceName}`;
 }
 
@@ -594,7 +636,8 @@ function openShiftEditModal(doctor, dayInfo, existingShift) {
 
 function handlePeriodChange() {
     const selectedPeriod = document.querySelector("input[name='optPeriod']:checked").value;
-    renderServiceOptions(selectedPeriod, "TU");
+    const defaultSrv = selectedPeriod === "12h" ? "TS+TU" : "TU";
+    renderServiceOptions(selectedPeriod, defaultSrv);
 }
 
 function renderServiceOptions(period, defaultService) {
@@ -605,7 +648,7 @@ function renderServiceOptions(period, defaultService) {
         container.innerHTML = `
             <div class="p-2.5 rounded-lg bg-purple-50 border border-purple-200 text-xs text-purple-900 flex items-center gap-2">
                 <i class="fa-solid fa-moon text-purple-600"></i>
-                <span>Descanso obligatorio de 12 horas posterior a un turno de 12h.</span>
+                <span>Descanso de guardia obligatorio posterior a un turno de 12 horas.</span>
             </div>
         `;
         return;
@@ -615,16 +658,17 @@ function renderServiceOptions(period, defaultService) {
     if (period === "M") {
         options = [
             { code: "TU", name: "Tópico de Urgencias (TU)", badge: "bg-orange-100 text-orange-800" },
-            { code: "CE", name: "Consultorio Externo de Medicina (CE)", badge: "bg-blue-100 text-blue-800" },
-            { code: "TS", name: "Telesalud (TS)", badge: "bg-emerald-100 text-emerald-800" }
+            { code: "CE", name: "Consultorio de Medicina (CE)", badge: "bg-blue-100 text-blue-800" },
+            { code: "TS", name: "Telesalud/TBC/MCI (TS)", badge: "bg-emerald-100 text-emerald-800" }
         ];
     } else if (period === "T") {
         options = [
             { code: "TU", name: "Tópico de Urgencias (TU)", badge: "bg-orange-100 text-orange-800" },
-            { code: "CE", name: "Consultorio Externo de Medicina (CE)", badge: "bg-blue-100 text-blue-800" }
+            { code: "CE", name: "Consultorio de Medicina (CE)", badge: "bg-blue-100 text-blue-800" }
         ];
     } else if (period === "12h") {
         options = [
+            { code: "TS+TU", name: "Mañana Telesalud/TBC/MCI + Tarde Tópico de Urgencias (TS+TU)", badge: "bg-emerald-100 text-emerald-800" },
             { code: "TU+CE", name: "Mañana Urgencias + Tarde Consultorio (TU+CE)", badge: "bg-amber-100 text-amber-800" },
             { code: "CE+TU", name: "Mañana Consultorio + Tarde Urgencias (CE+TU)", badge: "bg-amber-100 text-amber-800" },
             { code: "TU+TU", name: "Mañana Urgencias + Tarde Urgencias (TU+TU)", badge: "bg-amber-100 text-amber-800" }
@@ -644,6 +688,23 @@ function renderServiceOptions(period, defaultService) {
         `;
         container.appendChild(label);
     });
+}
+
+function showConfirmationToast(message) {
+    let toast = document.getElementById("shiftToastNotification");
+    if (!toast) {
+        toast = document.createElement("div");
+        toast.id = "shiftToastNotification";
+        toast.className = "fixed bottom-5 right-5 z-50 bg-emerald-700 text-white px-5 py-3.5 rounded-xl shadow-2xl border border-emerald-400 flex items-center gap-3 text-xs font-bold transition-all duration-300";
+        document.body.appendChild(toast);
+    }
+    toast.innerHTML = `<i class="fa-solid fa-circle-check text-lg text-emerald-200"></i> <span>${message}</span>`;
+    toast.style.display = "flex";
+    toast.style.opacity = "1";
+    setTimeout(() => {
+        toast.style.opacity = "0";
+        setTimeout(() => { toast.style.display = "none"; }, 300);
+    }, 4500);
 }
 
 async function handleSaveCurrentShift() {
@@ -672,6 +733,7 @@ async function handleSaveCurrentShift() {
         if (data.success) {
             closeModal("modalShiftEdit");
             await loadAll();
+            showConfirmationToast(data.message || "✅ El turno fue grabado correctamente y ya es visible para todos los médicos y el Administrador.");
         } else {
             alert(data.error || "Error al guardar el turno.");
         }
@@ -698,6 +760,7 @@ async function handleDeleteCurrentShift() {
         if (data.success) {
             closeModal("modalShiftEdit");
             await loadAll();
+            showConfirmationToast(data.message || "✅ El turno fue liberado y grabado correctamente.");
         } else {
             alert(data.error || "Error al eliminar el turno.");
         }
