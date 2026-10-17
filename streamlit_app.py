@@ -498,11 +498,9 @@ for doc in doctors_only:
     row_cls = "row-active" if is_my_row else ""
     d_sum = doc_summary.get(doc["id"], {"total_equivalent_shifts": 0, "count_6h": 0, "count_12h": 0, "count_des": 0, "days": {}})
     
+    my_badge = '<span style="background:#2563eb; color:white; font-size:9px; padding:1px 4px; border-radius:4px;">MI PERFIL</span>' if is_my_row else ''
     html.append(f"<tr class='{row_cls}'>")
-    html.append(
-        f"<td style='text-align:left; padding-left:8px;'>{doc['name']} "
-        f"{'<span style=\"background:#2563eb; color:white; font-size:9px; padding:1px 4px; border-radius:4px;\">MI PERFIL</span>' if is_my_row else ''}</td>"
-    )
+    html.append(f"<td style='text-align:left; padding-left:8px;'>{doc['name']} {my_badge}</td>")
     html.append(f"<td><small>{doc['condition']}</small></td>")
     html.append(f"<td><small>{doc['cmp']}</small></td>")
 
@@ -547,12 +545,14 @@ for d in days:
     else:
         m_srvs = cov.get("morning_services_covered", [])
         miss_m = cov.get("missing_morning_services", [])
+        miss_m_str = ",".join(miss_m)
+        m_srvs_str = ",".join(m_srvs) or "0"
         if not miss_m:
             html.append("<td class='cov-ok' title='TU, CE y TS cubiertos'>✓ TU·CE·TS</td>")
         elif cov.get("is_admin_approved_day"):
-            html.append(f"<td class='cov-adm' title='Aprobado por Admin. Faltaba: {\",\".join(miss_m)}'>✓ Admin<br><small>({','.join(m_srvs) or '0'})</small></td>")
+            html.append(f"<td class='cov-adm' title='Aprobado por Admin. Faltaba: {miss_m_str}'>✓ Admin<br><small>({m_srvs_str})</small></td>")
         else:
-            html.append(f"<td class='cov-err' title='Falta cubrir: {\",\".join(miss_m)}'>⚠️ Falta:<br>{','.join(miss_m)}</td>")
+            html.append(f"<td class='cov-err' title='Falta cubrir: {miss_m_str}'>⚠️ Falta:<br>{miss_m_str}</td>")
 for _ in range(6):
     html.append("<td></td>")
 html.append("</tr>")
@@ -567,12 +567,14 @@ for d in days:
     else:
         t_srvs = cov.get("afternoon_services_covered", [])
         miss_t = cov.get("missing_afternoon_services", [])
+        miss_t_str = ",".join(miss_t)
+        t_srvs_str = ",".join(t_srvs) or "0"
         if not miss_t:
             html.append("<td class='cov-ok' title='TU y CE cubiertos'>✓ TU·CE</td>")
         elif cov.get("is_admin_approved_day"):
-            html.append(f"<td class='cov-adm' title='Aprobado por Admin. Faltaba: {\",\".join(miss_t)}'>✓ Admin<br><small>({','.join(t_srvs) or '0'})</small></td>")
+            html.append(f"<td class='cov-adm' title='Aprobado por Admin. Faltaba: {miss_t_str}'>✓ Admin<br><small>({t_srvs_str})</small></td>")
         else:
-            html.append(f"<td class='cov-err' title='Falta cubrir: {\",\".join(miss_t)}'>⚠️ Falta:<br>{','.join(miss_t)}</td>")
+            html.append(f"<td class='cov-err' title='Falta cubrir: {miss_t_str}'>⚠️ Falta:<br>{miss_t_str}</td>")
 for _ in range(6):
     html.append("<td></td>")
 html.append("</tr>")
