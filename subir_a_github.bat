@@ -1,6 +1,8 @@
 @echo off
 title Subir IPRESS a GitHub (riosalexander-design)
 cd /d "%~dp0"
+set "PATH=%LOCALAPPDATA%\Programs\Git\cmd;%LOCALAPPDATA%\Programs\Git\gcm;%PATH%"
+set "GCM_INTERACTIVE=always"
 echo ========================================================
 echo   PUBLICANDO PROYECTO IPRESS EN GITHUB
 echo   Usuario: riosalexander-design
@@ -13,20 +15,14 @@ echo.
 echo 2. Subiendo rama main a GitHub...
 echo (Si te solicita iniciar sesion, haz clic en 'Sign in with your browser')
 echo.
-git push -u origin main
+git -c credential.helper="%LOCALAPPDATA%/Programs/Git/gcm/git-credential-manager.exe" push -u origin main
 echo.
 if %ERRORLEVEL% equ 0 (
     echo ========================================================
     echo   EXITO: Tu codigo ya esta publicado en:
     echo   https://github.com/riosalexander-design/turnos-ipress
+    echo   Y en Streamlit: https://turnos-ipress.streamlit.app/
     echo ========================================================
-    echo.
-    echo Siguiente paso:
-    echo 1. Entra a https://share.streamlit.io
-    echo 2. Clic en 'New app'
-    echo 3. Selecciona: riosalexander-design/turnos-ipress
-    echo 4. Archivo: streamlit_app.py
-    echo 5. Clic en 'Deploy!'
 ) else (
     echo.
     echo Ocurrio un inconveniente al subir. Revisa tus credenciales de GitHub.
