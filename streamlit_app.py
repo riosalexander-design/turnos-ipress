@@ -5,9 +5,20 @@ Compatible 100% con Streamlit Community Cloud (share.streamlit.io).
 """
 
 import io
+import importlib
 from datetime import datetime
 import pandas as pd
 import streamlit as st
+import database
+import holidays_pe
+import scheduler_engine
+import exporter
+
+importlib.reload(database)
+importlib.reload(holidays_pe)
+importlib.reload(scheduler_engine)
+importlib.reload(exporter)
+
 from database import init_db, get_connection, hash_pin, log_audit
 from holidays_pe import get_month_info
 from scheduler_engine import (
