@@ -15,9 +15,15 @@ Suite de pruebas automatizadas para verificar todas las reglas de negocio asiste
 """
 
 import unittest
+import os
 from datetime import datetime
 from holidays_pe import get_month_info
+import database
 from database import init_db, get_connection
+
+TEST_DB = os.path.join(os.path.dirname(__file__), "test_turnos.db")
+database.DB_FILE = TEST_DB
+
 from scheduler_engine import (
     calculate_deadline,
     auto_assign_missing_shifts_day10,
@@ -412,13 +418,14 @@ class TestIPRESSScheduling(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        """Asegura que los meses de Octubre, Noviembre y Diciembre 2026 queden limpios y vacíos."""
-        with get_connection() as conn:
-            conn.execute("DELETE FROM shifts WHERE month IN (10, 11, 12)")
-            conn.execute("DELETE FROM schedule_status WHERE month IN (10, 11, 12)")
-            conn.execute("DELETE FROM approved_day_exceptions WHERE month IN (10, 11, 12)")
-            conn.execute("DELETE FROM discrepancies WHERE month IN (10, 11, 12)")
-            conn.commit()
+        """Limpia la base de datos temporal de pruebas."""
+        for suffix in ("", "-wal", "-shm"):
+            p = TEST_DB + suffix
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
 
 
 if __name__ == "__main__":
