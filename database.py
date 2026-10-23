@@ -85,7 +85,6 @@ def get_connection():
 
 def _init_db_tables_and_users():
     """Crea tablas y asegura la existencia de los usuarios base sin sobrescribir claves personalizadas."""
-    need_october_seed = False
     with get_connection() as conn:
         cursor = conn.cursor()
 
@@ -243,20 +242,7 @@ def _init_db_tables_and_users():
         # Poda automática de logs de auditoría mayores a 3 meses (90 días)
         cursor.execute("DELETE FROM audit_logs WHERE timestamp < datetime('now', '-90 days')")
 
-        # Verificar si Octubre 2026 está vacío (por ejemplo, tras auto-reconstrucción de BD)
-        oct_count = cursor.execute("SELECT COUNT(*) FROM shifts WHERE year = 2026 AND month = 10").fetchone()[0]
-        if oct_count == 0:
-            need_october_seed = True
-
         conn.commit()
-
-    if need_october_seed:
-        try:
-            from scheduler_engine import auto_assign_missing_shifts_day10, approve_all_day_discrepancies
-            auto_assign_missing_shifts_day10(2026, 10)
-            approve_all_day_discrepancies(2026, 10)
-        except Exception:
-            pass
 
 
 def init_db():

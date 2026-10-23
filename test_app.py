@@ -412,9 +412,12 @@ class TestIPRESSScheduling(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        """Asegura que el mes de Noviembre 2026 quede limpio y vacío para la programación manual."""
+        """Asegura que los meses de Octubre, Noviembre y Diciembre 2026 queden limpios y vacíos."""
         with get_connection() as conn:
-            conn.execute("DELETE FROM shifts WHERE year = 2026 AND month = 11")
+            conn.execute("DELETE FROM shifts WHERE month IN (10, 11, 12)")
+            conn.execute("DELETE FROM schedule_status WHERE month IN (10, 11, 12)")
+            conn.execute("DELETE FROM approved_day_exceptions WHERE month IN (10, 11, 12)")
+            conn.execute("DELETE FROM discrepancies WHERE month IN (10, 11, 12)")
             conn.commit()
 
 
