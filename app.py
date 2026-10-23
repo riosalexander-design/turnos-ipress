@@ -8,7 +8,7 @@ detección y conciliación de discrepancias con plazo de 72h (máx día 10 00:00
 import os
 from datetime import datetime
 from flask import Flask, render_template, request, jsonify, session, send_file
-from database import init_db, get_connection, hash_pin, log_audit
+from database import init_db, get_connection, hash_pin, log_audit, get_audit_logs, prune_audit_logs
 from holidays_pe import get_month_info
 from scheduler_engine import (
     get_doctor_quota_summary,
@@ -55,7 +55,7 @@ def auth_me():
         return jsonify({"authenticated": False})
     
     with get_connection() as conn:
-        doc = conn.execute("SELECT id, name, condition, cmp, role FROM doctors WHERE id = ?", (user_id,)).fetchone()
+        doc = conn.execute("SELECT id, name, condition, cmp, username, role FROM doctors WHERE id = ?", (user_id,)).fetchone()
         if not doc:
             session.clear()
             return jsonify({"authenticated": False})
@@ -66,33 +66,47 @@ def auth_me():
                 "name": doc["name"],
                 "condition": doc["condition"],
                 "cmp": doc["cmp"],
+                "username": doc["username"],
                 "role": doc["role"]
             }
         })
 
 @app.route("/api/auth/login", methods=["POST"])
 def auth_login():
-    """Inicio de sesión con CMP y PIN."""
+    """Inicio de sesión con Usuario (o CMP) y Contraseña."""
     data = request.json or {}
-    cmp_num = (data.get("cmp") or "").strip()
-    pin = (data.get("pin") or "").strip()
+    user_input = (data.get("username") or data.get("cmp") or data.get("user") or "").strip()
+    password = (data.get("password") or data.get("pin") or "").strip()
 
-    if not cmp_num or not pin:
-        return jsonify({"success": False, "error": "Debe ingresar su CMP y PIN."}), 400
+    if not user_input or not password:
+        return jsonify({"success": False, "error": "Debe ingresar su usuario y contraseña."}), 400
 
     with get_connection() as conn:
-        doc = conn.execute("SELECT id, name, condition, cmp, pin_hash, role FROM doctors WHERE cmp = ? AND is_active = 1", (cmp_num,)).fetchone()
+        doc = conn.execute("""
+            SELECT id, name, condition, cmp, username, pin_hash, role
+            FROM doctors
+            WHERE (LOWER(username) = LOWER(?) OR UPPER(cmp) = UPPER(?)) AND is_active = 1
+        """, (user_input, user_input)).fetchone()
+
+        # Compatibilidad alias admin -> jefatura
+        if not doc and user_input.lower() == "admin":
+            doc = conn.execute("""
+                SELECT id, name, condition, cmp, username, pin_hash, role
+                FROM doctors
+                WHERE (username = 'jefatura' OR cmp = 'ADMIN') AND is_active = 1
+            """).fetchone()
+
         if not doc:
-            return jsonify({"success": False, "error": "Número de CMP o usuario no encontrado."}), 401
+            return jsonify({"success": False, "error": "Usuario o CMP no encontrado."}), 401
         
-        if doc["pin_hash"] != hash_pin(pin):
-            return jsonify({"success": False, "error": "PIN / Contraseña incorrecta."}), 401
+        if doc["pin_hash"] != hash_pin(password):
+            return jsonify({"success": False, "error": "Contraseña incorrecta."}), 401
         
         session["user_id"] = doc["id"]
         session["user_name"] = doc["name"]
         session["user_role"] = doc["role"]
         
-        log_audit(doc["id"], doc["name"], "Inicio de Sesión", f"Acceso correcto con CMP {cmp_num}")
+        log_audit(doc["id"], doc["name"], "Inicio de Sesión", f"Acceso correcto con usuario '{doc['username']}' ({doc['role']})")
         return jsonify({
             "success": True,
             "user": {
@@ -100,6 +114,7 @@ def auth_login():
                 "name": doc["name"],
                 "condition": doc["condition"],
                 "cmp": doc["cmp"],
+                "username": doc["username"],
                 "role": doc["role"]
             }
         })
@@ -156,10 +171,10 @@ def api_month_info():
 
 @app.route("/api/doctors", methods=["GET"])
 def api_doctors():
-    """Retorna la lista de médicos activos de la IPRESS."""
+    """Retorna la lista de médicos y usuarios activos de la IPRESS."""
     with get_connection() as conn:
         docs = conn.execute("""
-            SELECT id, name, condition, cmp, role
+            SELECT id, name, condition, cmp, username, role
             FROM doctors
             WHERE is_active = 1
             ORDER BY role DESC, condition DESC, name ASC
@@ -209,12 +224,23 @@ def api_get_schedule():
     # Calcular plazo límite institucional para el frontend
     deadline_dt, deadline_str = calculate_deadline(curr_time, year, month)
 
+    # Advertencia del Día 10:
+    # A partir del día 10 de cada mes se vence el plazo de propuestas y Jefatura/RRHH debe completar manualmente el horario
+    show_day10_warning = curr_time.day >= 10
+    day10_warning_message = (
+        "⚠️ ADVERTENCIA INSTITUCIONAL (Corte Día 10): Ha finalizado el plazo de propuestas de turnos. "
+        "La Jefatura Médica o el Responsable de Recursos Humanos debe completar manualmente el horario del mes siguiente, "
+        "garantizando la meta mensual por médico, la dotación mínima de 2 médicos por turno (Mañana y Tarde) y los descansos obligatorios."
+    )
+
     return jsonify({
         "year": year,
         "month": month,
         "current_time": curr_time.isoformat(),
         "deadline_datetime": deadline_dt.isoformat(),
         "deadline_str": deadline_str,
+        "is_day_10_passed": show_day10_warning,
+        "day10_warning_message": day10_warning_message,
         "quota_summary": quota_data,
         "coverage": coverage_data,
         "discrepancies": disc_list,
@@ -364,9 +390,9 @@ def api_validate_approval():
 
 @app.route("/api/schedule/reopen", methods=["POST"])
 def api_reopen_schedule():
-    """Reabre el horario para permitir modificaciones tras haber sido aprobado (Solo Jefatura/ADMIN)."""
-    if session.get("user_role") != "admin":
-        return jsonify({"success": False, "error": "ACCESO DENEGADO: Solo la Jefatura Médica (ADMIN) puede reabrir el horario."}), 403
+    """Reabre el horario para permitir modificaciones tras haber sido aprobado (Solo Jefatura o RRHH)."""
+    if session.get("user_role") not in ("admin", "rrhh"):
+        return jsonify({"success": False, "error": "ACCESO DENEGADO: Solo la Jefatura Médica o el Responsable de RRHH pueden reabrir el horario."}), 403
     data = request.json or {}
     year = int(data.get("year"))
     month = int(data.get("month"))
@@ -375,11 +401,11 @@ def api_reopen_schedule():
 
 @app.route("/api/schedule/approve-day", methods=["POST"])
 def api_approve_day_discrepancy():
-    """Aprueba un día con discrepancia de cobertura de servicios (Exclusivo para el Administrador)."""
-    if session.get("user_role") != "admin":
+    """Aprueba un día con discrepancia de cobertura de servicios (Exclusivo para Jefatura Médica o RRHH)."""
+    if session.get("user_role") not in ("admin", "rrhh"):
         return jsonify({
             "success": False,
-            "error": "ACCESO DENEGADO: Solo el Administrador puede aprobar el día en el que exista discrepancia de cobertura de servicios."
+            "error": "ACCESO DENEGADO: Solo la Jefatura Médica o el Responsable de RRHH pueden aprobar días con discrepancia de cobertura."
         }), 403
     data = request.json or {}
     year = int(data.get("year"))
@@ -388,6 +414,28 @@ def api_approve_day_discrepancy():
     notes = data.get("notes", "")
     res = approve_day_discrepancy(year, month, day, session.get("user_name", "Jefatura Médica IPRESS"), notes)
     return jsonify(res)
+
+@app.route("/api/audit-logs", methods=["GET"])
+def api_get_audit_logs():
+    """Retorna los registros de auditoría de los últimos 3 meses (90 días) con filtros opcionales."""
+    curr_role = session.get("user_role")
+    if not session.get("user_id"):
+        return jsonify({"success": False, "error": "Debe iniciar sesión para ver el log de auditoría."}), 401
+
+    if curr_role not in ("admin", "rrhh"):
+        filter_user = session.get("user_name")
+    else:
+        filter_user = request.args.get("user")
+
+    filter_action = request.args.get("action")
+    limit = int(request.args.get("limit", 500))
+    logs = get_audit_logs(limit=limit, filter_user=filter_user, filter_action=filter_action)
+    return jsonify({
+        "success": True,
+        "logs": logs,
+        "count": len(logs),
+        "retention_policy": "90 días (3 meses)"
+    })
 
 # -------------------------------------------------------------
 # EXPORTACIÓN A EXCEL (.xlsx)

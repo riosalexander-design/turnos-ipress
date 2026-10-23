@@ -19,7 +19,7 @@ importlib.reload(holidays_pe)
 importlib.reload(scheduler_engine)
 importlib.reload(exporter)
 
-from database import init_db, get_connection, hash_pin, log_audit
+from database import init_db, get_connection, hash_pin, log_audit, get_audit_logs, prune_audit_logs
 from holidays_pe import get_month_info
 from scheduler_engine import (
     get_doctor_quota_summary,
@@ -113,7 +113,7 @@ if "shift_saved_confirmation" not in st.session_state:
 
 def get_all_doctors():
     with get_connection() as conn:
-        return conn.execute("SELECT id, name, condition, cmp, role FROM doctors WHERE is_active = 1 ORDER BY condition DESC, name ASC").fetchall()
+        return conn.execute("SELECT id, name, condition, cmp, username, role FROM doctors WHERE is_active = 1 ORDER BY condition DESC, name ASC").fetchall()
 
 doctors_list = [dict(d) for d in get_all_doctors()]
 doctors_only = [d for d in doctors_list if d["role"] == "doctor"]
@@ -137,55 +137,62 @@ with st.sidebar:
         selected_month = st.selectbox("Mes", list(meses_nombres.keys()), index=9, format_func=lambda x: meses_nombres[x])
 
     st.markdown("---")
-    st.subheader("🔐 Acceso por Médico / Admin")
+    st.subheader("🔐 Acceso al Sistema")
 
     if st.session_state["user"] is None:
-        doc_options = {d["cmp"]: f"{d['name']} ({d['cmp']})" for d in doctors_only}
-        doc_options["ADMIN"] = "Jefatura Médica IPRESS (ADMIN)"
+        user_options = {
+            d["username"]: f"@{d['username']} — {d['name']} ({'JEFATURA' if d['role']=='admin' else ('RRHH' if d['role']=='rrhh' else d['condition'])})"
+            for d in doctors_list
+        }
         
-        sel_cmp = st.selectbox("Selecciona tu perfil:", list(doc_options.keys()), format_func=lambda k: doc_options[k])
-        input_pin = st.text_input("Ingresa tu PIN personal:", type="password")
+        sel_username = st.selectbox("Selecciona tu Usuario:", list(user_options.keys()), format_func=lambda k: user_options[k])
+        input_pwd = st.text_input("Ingresa tu Contraseña personal:", type="password")
 
         if st.button("Iniciar Sesión", use_container_width=True, type="primary"):
-            if not input_pin:
-                st.error("Debes ingresar tu PIN.")
+            if not input_pwd:
+                st.error("Debes ingresar tu contraseña.")
             else:
                 with get_connection() as conn:
-                    doc_db = conn.execute("SELECT id, name, condition, cmp, pin_hash, role FROM doctors WHERE cmp = ?", (sel_cmp,)).fetchone()
-                    if doc_db and doc_db["pin_hash"] == hash_pin(input_pin):
+                    doc_db = conn.execute("""
+                        SELECT id, name, condition, cmp, username, pin_hash, role
+                        FROM doctors
+                        WHERE username = ? AND is_active = 1
+                    """, (sel_username,)).fetchone()
+                    if doc_db and doc_db["pin_hash"] == hash_pin(input_pwd):
                         st.session_state["user"] = dict(doc_db)
-                        log_audit(doc_db["id"], doc_db["name"], "Inicio de Sesión Streamlit", f"Acceso con CMP {sel_cmp}")
+                        log_audit(doc_db["id"], doc_db["name"], "Inicio de Sesión", f"Acceso correcto de usuario @{sel_username}")
                         st.rerun()
                     else:
-                        st.error("PIN incorrecto.")
+                        st.error("Contraseña incorrecta.")
+        st.caption("ℹ️ *Claves en función del usuario (ej. caldas2026, rrhh2026, jefatura2026)*")
     else:
         u = st.session_state["user"]
         st.success(f"**{u['name']}**")
-        st.caption(f"CMP: {u['cmp']} | Condición: {u['condition']} | Rol: {u['role'].upper()}")
+        st.caption(f"Usuario: `@{u.get('username', '')}` | CMP: `{u['cmp']}` | Rol: `{u['role'].upper()}`")
 
         if st.button("Cerrar Sesión", use_container_width=True):
             st.session_state["user"] = None
             st.rerun()
 
-        with st.expander("🔑 Cambiar mi PIN"):
-            old_p = st.text_input("PIN Actual:", type="password", key="old_pin_sb")
-            new_p = st.text_input("Nuevo PIN (mín 4 dígitos):", type="password", key="new_pin_sb")
-            conf_p = st.text_input("Confirmar Nuevo PIN:", type="password", key="conf_pin_sb")
-            if st.button("Guardar Nuevo PIN", use_container_width=True):
+        with st.expander("🔑 Cambiar mi Contraseña"):
+            old_p = st.text_input("Contraseña Actual:", type="password", key="old_pin_sb")
+            new_p = st.text_input("Nueva Contraseña (mín 4 caracteres):", type="password", key="new_pin_sb")
+            conf_p = st.text_input("Confirmar Nueva Contraseña:", type="password", key="conf_pin_sb")
+            if st.button("Guardar Nueva Contraseña", use_container_width=True):
                 if len(new_p) < 4:
-                    st.error("El nuevo PIN debe tener al menos 4 caracteres.")
+                    st.error("La nueva contraseña debe tener al menos 4 caracteres.")
                 elif new_p != conf_p:
-                    st.error("Los PINes nuevos no coinciden.")
+                    st.error("Las contraseñas no coinciden.")
                 else:
                     with get_connection() as conn:
                         chk = conn.execute("SELECT pin_hash FROM doctors WHERE id = ?", (u["id"],)).fetchone()
                         if chk and chk["pin_hash"] == hash_pin(old_p):
                             conn.execute("UPDATE doctors SET pin_hash = ? WHERE id = ?", (hash_pin(new_p), u["id"]))
                             conn.commit()
-                            log_audit(u["id"], u["name"], "Cambio de PIN", "PIN actualizado")
-                            st.success("¡PIN actualizado con éxito!")
+                            log_audit(u["id"], u["name"], "Cambio de Contraseña", "Contraseña actualizada exitosamente", conn=conn)
+                            st.success("¡Contraseña actualizada con éxito!")
                         else:
-                            st.error("El PIN actual no es correcto.")
+                            st.error("La contraseña actual no es correcta.")
 
 # -------------------------------------------------------------------
 # DATOS DEL MES Y REGLAS
@@ -193,12 +200,6 @@ with st.sidebar:
 month_info = get_month_info(selected_year, selected_month)
 quota = month_info["monthly_quota"]
 days = month_info["days"]
-
-# Si el mes aún no tiene ningún turno cargado (ej. al cambiar a Noviembre), inicializar con el rol base
-with get_connection() as conn:
-    cnt_shifts = conn.execute("SELECT COUNT(*) as c FROM shifts WHERE year = ? AND month = ?", (selected_year, selected_month)).fetchone()["c"]
-if cnt_shifts == 0 and selected_month in (10, 11):
-    auto_assign_missing_shifts_day10(selected_year, selected_month)
 
 quota_summary = get_doctor_quota_summary(selected_year, selected_month)
 doc_summary = quota_summary["doctors_summary"]
@@ -221,7 +222,8 @@ open_discs = [d for d in discrepancies if d["status"] == "open"]
 service_alert_days = [d for d, c in coverage.items() if c["has_service_alert"]]
 unapproved_service_alert_days = [d for d, c in coverage.items() if c["has_service_alert"] and not c["is_admin_approved_day"]]
 
-is_admin_user = (st.session_state["user"] is not None and st.session_state["user"].get("role") == "admin")
+is_admin_or_rrhh = (st.session_state["user"] is not None and st.session_state["user"].get("role") in ("admin", "rrhh"))
+is_admin_user = is_admin_or_rrhh
 
 # -------------------------------------------------------------------
 # VENTANA MODAL DE GRABACIÓN DE TURNO (@st.dialog)
@@ -230,14 +232,15 @@ is_admin_user = (st.session_state["user"] is not None and st.session_state["user
 @st.dialog("🗓️ Ventana de Grabación de Turno Asistencial", width="large")
 def open_shift_recording_modal(default_day: int = None):
     u = st.session_state["user"]
-    is_admin = (u.get("role") == "admin")
+    is_admin = (u.get("role") in ("admin", "rrhh"))
 
     if is_admin:
-        st.markdown("**👑 Modo Administrador (Jefatura Médica):** Puedes registrar o modificar el turno de cualquier médico (incluidos los domingos).")
+        role_label = "Jefatura Médica" if u.get("role") == "admin" else "Recursos Humanos"
+        st.markdown(f"**👑 Modo de Gestión Institucional ({role_label}):** Puedes registrar o modificar el turno de cualquier médico cirujano (incluidos los domingos).")
         target_doc_id = st.selectbox(
             "1. Seleccionar Médico Cirujano:",
             [doc["id"] for doc in doctors_only],
-            format_func=lambda did: next((f"{d['name']} ({d['condition']} - CMP: {d['cmp']})" for d in doctors_only if d["id"] == did), str(did)),
+            format_func=lambda did: next((f"{d['name']} ({d['condition']} - CMP: {d['cmp']} - @{d['username']})" for d in doctors_only if d["id"] == did), str(did)),
             key="dlg_admin_doc"
         )
         target_doc = next((d for d in doctors_only if d["id"] == target_doc_id), doctors_only[0])
@@ -245,7 +248,7 @@ def open_shift_recording_modal(default_day: int = None):
         target_name = target_doc["name"]
         selectable_days = [d["day"] for d in days]
     else:
-        st.markdown(f"**👨‍⚕️ Médico Cirujano:** `{u['name']}` (CMP: `{u['cmp']}`)")
+        st.markdown(f"**👨‍⚕️ Médico Cirujano:** `{u['name']}` (CMP: `{u['cmp']}` | Usuario: `@{u['username']}`)")
         st.caption("🔒 Los domingos están bloqueados para los médicos. Solo puedes modificar tu propia programación.")
         target_id = u["id"]
         target_name = u["name"]
@@ -260,7 +263,7 @@ def open_shift_recording_modal(default_day: int = None):
         format_func=lambda d_num: (
             f"Día {d_num:02d} — {days[d_num - 1]['weekday_name']}"
             f"{' (FERIADO: ' + days[d_num - 1]['holiday_name'] + ')' if days[d_num - 1]['is_holiday'] else ''}"
-            f"{' [DOMINGO - Solo Admin]' if days[d_num - 1]['is_sunday'] else ''}"
+            f"{' [DOMINGO - Solo Jefatura/RRHH]' if days[d_num - 1]['is_sunday'] else ''}"
         ),
         key="dlg_day_select"
     )
@@ -366,11 +369,21 @@ def open_shift_recording_modal(default_day: int = None):
 # -------------------------------------------------------------------
 st.title(f"Programación Asistencial: {month_info['month_name']} {selected_year}")
 
+# Advertencia Oficial del Día 10 de cada mes
+today_dt = datetime.now()
+if today_dt.day >= 10:
+    st.warning(
+        "⚠️ **ADVERTENCIA INSTITUCIONAL (Corte Día 10 de cada mes):**\n\n"
+        "Ha finalizado el plazo reglamentario para el registro de auto-propuestas de turnos por parte de los médicos cirujanos. "
+        "La **Jefatura Médica** o el **Responsable de Recursos Humanos** debe proceder a **completar manualmente** el rol de turnos asistenciales del mes siguiente, "
+        "verificando el cumplimiento de la meta mensual de turnos por médico, la dotación mínima ininterrumpida de al menos **2 médicos por turno (Mañana y Tarde)** y los descansos obligatorios de guardia (DES)."
+    )
+
 # Mostrar confirmación si se acaba de grabar un turno y cerrar la ventana
 if st.session_state.get("shift_saved_confirmation"):
     msg_ok = st.session_state["shift_saved_confirmation"]
     st.toast("✅ El turno fue grabado correctamente", icon="✅")
-    st.success(f"✅ **CONFIRMACIÓN DE GRABACIÓN:** {msg_ok} *(Visible para todos los médicos y el Administrador)*")
+    st.success(f"✅ **CONFIRMACIÓN DE GRABACIÓN:** {msg_ok} *(Visible para todos los médicos y la Administración)*")
     st.session_state["shift_saved_confirmation"] = None
 
 # Banner de Estado General
@@ -380,7 +393,7 @@ elif len(unapproved_service_alert_days) > 0:
     st.warning(
         f"⚠️ **Alerta de Cobertura de Servicios:** Existen **{len(unapproved_service_alert_days)} día(s)** en los que no se cubren todos los servicios requeridos "
         f"(Mañana: Tópico de Urgencias `TU`, Consultorio de Medicina `CE` y Telesalud/TBC/MCI `TS`; Tarde: Tópico de Urgencias `TU` y Consultorio de Medicina `CE`). "
-        f"**Solo el Administrador puede aprobar los días en los que exista esta discrepancia.**"
+        f"**Solo la Jefatura Médica o RRHH pueden aprobar los días en los que exista esta discrepancia.**"
     )
 elif len(open_discs) > 0:
     st.warning(f"⚠️ **Atención: Hay {len(open_discs)} discrepancia(s) de colisión entre médicos.**")
@@ -396,9 +409,9 @@ with kpi2:
         my_s = doc_summary.get(st.session_state["user"]["id"], {})
         my_tot = my_s.get("total_equivalent_shifts", 0)
         st.metric("Mi Programación", f"{my_tot} / {quota}", f"{my_s.get('status', 'Incompleto')}")
-    elif is_admin_user:
+    elif is_admin_or_rrhh:
         complete_cnt = sum(1 for d in doc_summary.values() if d["total_equivalent_shifts"] == quota)
-        st.metric("Médicos en Meta", f"{complete_cnt} / {len(doctors_only)}", "Supervisión Admin")
+        st.metric("Médicos en Meta", f"{complete_cnt} / {len(doctors_only)}", "Supervisión Jefatura/RRHH")
     else:
         st.metric("Mi Programación", "-- / --", "Inicia sesión")
 with kpi3:
@@ -410,46 +423,36 @@ with kpi3:
 with kpi4:
     st.metric("Días con Alerta Servicios", f"{len(unapproved_service_alert_days)} pendientes", f"{len(service_alert_days)} totales en el mes")
 with kpi5:
-    st.metric("Domingos", "Bloqueados (Médicos)", "Habilitados para ADMIN")
+    st.metric("Domingos", "Bloqueados (Médicos)", "Habilitados para Jefatura/RRHH")
 
 st.markdown("---")
 
 # -------------------------------------------------------------------
 # BARRA DE ACCIONES PRINCIPALES
 # -------------------------------------------------------------------
-b_col0, b_col1, b_col2, b_col3 = st.columns([2.2, 2.2, 2.2, 2])
+b_col0, b_col1, b_col2 = st.columns([2.5, 2.5, 2])
 
 with b_col0:
     if st.session_state["user"] is not None:
-        btn_open_txt = "➕ Grabar / Modificar Turno (Admin)" if is_admin_user else "➕ Grabar / Modificar Mi Turno"
+        btn_open_txt = "➕ Grabar / Modificar Turno (Jefatura/RRHH)" if is_admin_or_rrhh else "➕ Grabar / Modificar Mi Turno"
         if st.button(btn_open_txt, use_container_width=True, type="primary"):
             open_shift_recording_modal()
     else:
         st.button("🔒 Inicia Sesión para Grabar Turnos", use_container_width=True, disabled=True)
 
 with b_col1:
-    if st.button("🪄 Aplicar Rol Institucional / Autocompletar", use_container_width=True, type="secondary"):
-        if not is_admin_user:
-            st.warning("🔒 Acción restringida: Solo el Administrador (ADMIN) puede ejecutar la asignación automática institucional.")
-        else:
-            auto_assign_missing_shifts_day10(selected_year, selected_month)
-            log_audit(st.session_state["user"]["id"], st.session_state["user"]["name"], "Asignación Automática", f"Rol institucional aplicado para {selected_month}/{selected_year}")
-            st.session_state["shift_saved_confirmation"] = f"Rol institucional de {month_info['month_name']} {selected_year} generado correctamente."
-            st.rerun()
-
-with b_col2:
     if approval_status.get("is_approved"):
-        if st.button("🔄 Reabrir Horario (Solo ADMIN)", use_container_width=True, type="secondary"):
-            if not is_admin_user:
-                st.warning("🔒 Acción restringida: Solo el Administrador (ADMIN) puede reabrir un horario aprobado.")
+        if st.button("🔄 Reabrir Horario (Jefatura / RRHH)", use_container_width=True, type="secondary"):
+            if not is_admin_or_rrhh:
+                st.warning("🔒 Acción restringida: Solo la Jefatura Médica o RRHH pueden reabrir un horario aprobado.")
             else:
                 reopen_schedule(selected_year, selected_month, st.session_state["user"]["name"])
                 st.success("¡Horario reabierto con éxito para modificaciones!")
                 st.rerun()
     else:
-        if st.button("✅ Aprobar Horario Mensual (Solo ADMIN)", use_container_width=True, type="secondary"):
-            if not is_admin_user:
-                st.warning("🔒 Acción restringida: Solo el Administrador (ADMIN) puede aprobar los días con discrepancia y certificar el horario.")
+        if st.button("✅ Aprobar Horario Mensual (Jefatura / RRHH)", use_container_width=True, type="secondary"):
+            if not is_admin_or_rrhh:
+                st.warning("🔒 Acción restringida: Solo la Jefatura Médica o RRHH pueden certificar el horario mensual.")
             else:
                 val_res = validate_and_approve_schedule(selected_year, selected_month, st.session_state["user"]["name"], approve_pending_days=True)
                 if val_res["is_approved"]:
@@ -458,7 +461,7 @@ with b_col2:
                 else:
                     st.error(f"No se puede aprobar aún: {val_res['reason']}")
 
-with b_col3:
+with b_col2:
     excel_stream = generate_excel_schedule(selected_year, selected_month, "IPRESS SALUD PERÚ")
     st.download_button(
         label="📥 Descargar Rol en Excel (.xlsx)",
@@ -594,50 +597,51 @@ html.append("</table></div>")
 st.markdown("".join(html), unsafe_allow_html=True)
 
 # -------------------------------------------------------------------
-# ALERTAS DE COBERTURA DE SERVICIOS DIARIOS Y APROBACIÓN POR ADMIN
+# -------------------------------------------------------------------
+# ALERTAS DE COBERTURA DE SERVICIOS DIARIOS Y APROBACIÓN POR JEFATURA / RRHH
 # -------------------------------------------------------------------
 if len(service_alert_days) > 0:
     st.markdown("---")
     with st.expander(
-        f"🚨 Alertas de Cobertura de Servicios Diarios ({len(unapproved_service_alert_days)} pendientes de aprobación del Administrador)",
+        f"🚨 Alertas de Cobertura de Servicios Diarios ({len(unapproved_service_alert_days)} pendientes de aprobación de Jefatura/RRHH)",
         expanded=(len(unapproved_service_alert_days) > 0)
     ):
         st.markdown(
             "**Regla de Cobertura de Servicios:** En las **Mañanas** se debe cubrir `Tópico de Urgencias (TU)`, `Consultorio de Medicina (CE)` y `Telesalud/TBC/MCI (TS)`. "
             "En las **Tardes** se debe cubrir `Tópico de Urgencias (TU)` y `Consultorio de Medicina (CE)`. "
-            "**Solo el Administrador puede aprobar el día en el que exista esa discrepancia.**"
+            "**Solo la Jefatura Médica o el Responsable de Recursos Humanos pueden aprobar los días en los que exista esta discrepancia.**"
         )
 
-        if is_admin_user and len(unapproved_service_alert_days) > 0:
-            if st.button("✅ Aprobar Todos los Días con Discrepancia de Cobertura (Modo Administrador)", type="primary"):
+        if is_admin_or_rrhh and len(unapproved_service_alert_days) > 0:
+            if st.button("✅ Aprobar Todos los Días con Discrepancia de Cobertura (Modo Jefatura / RRHH)", type="primary"):
                 cnt = approve_all_day_discrepancies(selected_year, selected_month, st.session_state["user"]["name"])
-                st.session_state["shift_saved_confirmation"] = f"Se aprobaron exitosamente {cnt} día(s) con discrepancia de cobertura por el Administrador."
+                st.session_state["shift_saved_confirmation"] = f"Se aprobaron exitosamente {cnt} día(s) con discrepancia de cobertura por {st.session_state['user']['name']}."
                 st.rerun()
 
         for d_num in service_alert_days:
             c_info = coverage[d_num]
             col_a1, col_a2 = st.columns([3.5, 1.5])
             with col_a1:
-                status_badge = "🟢 **[APROBADO POR ADMINISTRADOR]**" if c_info["is_admin_approved_day"] else "🔴 **[PENDIENTE DE APROBACIÓN ADMIN]**"
+                status_badge = "🟢 **[APROBADO POR GESTIÓN]**" if c_info["is_admin_approved_day"] else "🔴 **[PENDIENTE DE APROBACIÓN JEFATURA/RRHH]**"
                 st.markdown(
                     f"**Día {d_num:02d} ({c_info['weekday_name']})** {status_badge} — {c_info['alert_message']}"
                 )
             with col_a2:
                 if c_info["is_admin_approved_day"]:
-                    if is_admin_user:
+                    if is_admin_or_rrhh:
                         if st.button(f"Revocar Día {d_num:02d}", key=f"rev_day_{d_num}"):
                             revoke_day_approval(selected_year, selected_month, d_num, st.session_state["user"]["name"])
                             st.rerun()
                     else:
                         st.caption(f"Aprobado por {c_info['admin_approval_info']['approved_by']}")
                 else:
-                    if is_admin_user:
+                    if is_admin_or_rrhh:
                         if st.button(f"✅ Aprobar Día {d_num:02d}", key=f"app_day_{d_num}", type="primary"):
                             approve_day_discrepancy(selected_year, selected_month, d_num, st.session_state["user"]["name"], c_info["alert_message"])
-                            st.session_state["shift_saved_confirmation"] = f"Día {d_num:02d}/{selected_month:02d}/{selected_year} aprobado por el Administrador."
+                            st.session_state["shift_saved_confirmation"] = f"Día {d_num:02d}/{selected_month:02d}/{selected_year} aprobado por {st.session_state['user']['name']}."
                             st.rerun()
                     else:
-                        st.caption("🔒 Solo el Administrador puede aprobar este día")
+                        st.caption("🔒 Solo Jefatura Médica o RRHH pueden aprobar este día")
 
 # -------------------------------------------------------------------
 # CENTRO DE DISCREPANCIAS POR COLISIÓN DE PUESTO (SI EXISTEN)
@@ -661,7 +665,7 @@ if len(open_discs) > 0:
 with st.expander("📋 Ver Reglas de Programación Institucional por Médico (Octubre - Noviembre)", expanded=False):
     st.markdown("""
     - **Meta Mensual:** **25 turnos** por médico menos los feriados nacionales que caigan de **lunes a sábado**.
-    - **Domingos:** Bloqueados para los médicos; únicamente el **Administrador** puede programar en domingo.
+    - **Domingos:** Bloqueados para los médicos; únicamente la **Jefatura Médica** o el **Responsable de Recursos Humanos** pueden programar en domingo.
     - **Servicios Obligatorios:**
       - **Mañana:** 1 médico en **Tópico de Urgencias (`TU`)**, 1 en **Consultorio de Medicina (`CE`)** y 1 en **Telesalud/TBC/MCI (`TS`)**.
       - **Tarde:** 1 médico en **Tópico de Urgencias (`TU`)** y 1 en **Consultorio de Medicina (`CE`)**.
@@ -681,70 +685,130 @@ with st.expander("📋 Ver Reglas de Programación Institucional por Médico (Oc
     """)
 
 # -------------------------------------------------------------------
-# PANELES EXCLUSIVOS DE ADMINISTRACIÓN / JEFATURA
+# LOG DE CAMBIOS Y TRAZABILIDAD (ÚLTIMOS 3 MESES / 90 DÍAS)
 # -------------------------------------------------------------------
-if is_admin_user:
-    st.markdown("---")
-    st.subheader("👑 Panel de Control de Jefatura Médica (ADMIN)")
+with st.expander("📜 Log de Cambios y Trazabilidad (Últimos 3 Meses - Retención 90 Días)", expanded=False):
+    st.markdown("""
+    **Políticas de Auditoría Institucional:**
+    - **Retención:** Se almacenan y resguardan de forma automática todos los eventos de los últimos **3 meses (90 días)**.
+    - **Trazabilidad:** Cada acción registra el usuario ejecutor, médico afectado, fecha y hora exacta, tipo de acción y detalle de cambios.
+    """)
 
-    adm_tab1, adm_tab2 = st.tabs(["🛡️ Auditoría y Trazabilidad de Acciones", "👥 Gestión de Personal y PINes"])
+    all_logs = get_audit_logs(limit=1000)
+
+    m_col1, m_col2, m_col3 = st.columns(3)
+    with m_col1:
+        st.metric("Registros en 90 Días", len(all_logs))
+    with m_col2:
+        st.metric("Ventana de Retención", "90 días (3 meses)")
+    with m_col3:
+        last_ts = all_logs[0]["timestamp"][:19].replace("T", " ") if all_logs else "Sin registros"
+        st.metric("Último Registro", last_ts)
+
+    f_col1, f_col2, f_col3 = st.columns([1.5, 1.5, 2])
+    with f_col1:
+        users_in_logs = sorted(list(set(l["doctor_name"] for l in all_logs if l.get("doctor_name"))))
+        sel_filter_user = st.selectbox("Filtrar por Usuario / Médico:", ["Todos"] + users_in_logs, key="log_flt_user")
+    with f_col2:
+        actions_in_logs = sorted(list(set(l["action"] for l in all_logs if l.get("action"))))
+        sel_filter_action = st.selectbox("Filtrar por Tipo de Acción:", ["Todas"] + actions_in_logs, key="log_flt_act")
+    with f_col3:
+        search_text = st.text_input("Buscar texto en detalles:", key="log_flt_txt", placeholder="Ej. Día 05, Dra. Caldas, etc.")
+
+    filtered = all_logs
+    if sel_filter_user != "Todos":
+        filtered = [l for l in filtered if l["doctor_name"] == sel_filter_user]
+    if sel_filter_action != "Todas":
+        filtered = [l for l in filtered if l["action"] == sel_filter_action]
+    if search_text:
+        filtered = [l for l in filtered if search_text.lower() in (l.get("details") or "").lower() or search_text.lower() in (l.get("doctor_name") or "").lower()]
+
+    if filtered:
+        df_show = pd.DataFrame([{
+            "Fecha y Hora": r["timestamp"][:19].replace("T", " "),
+            "Usuario / Responsable": r["doctor_name"],
+            "Acción": r["action"],
+            "Detalle del Cambio": r["details"]
+        } for r in filtered])
+        st.dataframe(df_show, use_container_width=True, hide_index=True)
+
+        csv_data = df_show.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            "📥 Descargar Log de Auditoría (CSV)",
+            data=csv_data,
+            file_name=f"Log_Auditoria_IPRESS_90dias_{datetime.now().strftime('%Y%m%d')}.csv",
+            mime="text/csv",
+            key="btn_dl_audit_csv"
+        )
+    else:
+        st.info("No se encontraron registros de cambios con los filtros seleccionados.")
+
+# -------------------------------------------------------------------
+# PANELES EXCLUSIVOS DE ADMINISTRACIÓN (JEFATURA MÉDICA / RRHH)
+# -------------------------------------------------------------------
+if is_admin_or_rrhh:
+    st.markdown("---")
+    curr_u_role = st.session_state["user"]["role"]
+    role_header = "Jefatura Médica" if curr_u_role == "admin" else "Responsable de Recursos Humanos"
+    st.subheader(f"👑 Panel de Control Institucional ({role_header})")
+
+    adm_tab1, adm_tab2 = st.tabs(["🛡️ Auditoría en Vivo", "👥 Gestión de Personal y Contraseñas"])
 
     with adm_tab1:
-        st.markdown("##### Registro de Auditoría en Tiempo Real (`audit_logs`)")
-        with get_connection() as conn:
-            logs = conn.execute("""
-                SELECT timestamp, doctor_name, action, details
-                FROM audit_logs
-                ORDER BY id DESC
-                LIMIT 50
-            """).fetchall()
-        
-        if logs:
-            df_logs = pd.DataFrame([dict(row) for row in logs])
-            df_logs.rename(columns={
-                "timestamp": "Fecha y Hora",
-                "doctor_name": "Usuario / Médico",
-                "action": "Acción Realizada",
-                "details": "Detalles"
-            }, inplace=True)
+        st.markdown("##### Registro de Auditoría Reciente (`audit_logs`)")
+        logs_recent = get_audit_logs(limit=50)
+        if logs_recent:
+            df_logs = pd.DataFrame([{
+                "Fecha y Hora": r["timestamp"][:19].replace("T", " "),
+                "Usuario / Médico": r["doctor_name"],
+                "Acción Realizada": r["action"],
+                "Detalles": r["details"]
+            } for r in logs_recent])
             st.dataframe(df_logs, use_container_width=True, hide_index=True)
         else:
             st.info("No hay registros de auditoría aún.")
 
     with adm_tab2:
-        st.markdown("##### Nómina Médica Asistencial")
+        st.markdown("##### Nómina Institucional de Usuarios")
         doc_rows = [{
             "ID": d["id"],
-            "Médico Cirujano": d["name"],
+            "Nombre Completo": d["name"],
             "Condición": d["condition"],
             "CMP": d["cmp"],
-            "Rol": d["role"].capitalize()
+            "Usuario": f"@{d.get('username', '')}",
+            "Rol": d["role"].upper()
         } for d in doctors_list]
         st.dataframe(pd.DataFrame(doc_rows), use_container_width=True, hide_index=True)
 
-        st.markdown("##### 🔑 Restablecer PIN de Acceso a un Médico")
+        st.markdown("##### 🔑 Restablecer Contraseña de Acceso")
         c_p1, c_p2, c_p3 = st.columns([2, 1.5, 1])
         with c_p1:
             rst_doc_id = st.selectbox(
-                "Seleccionar Médico para Reset de PIN:",
-                [d["id"] for d in doctors_only],
-                format_func=lambda did: next((f"{d['name']} (CMP: {d['cmp']})" for d in doctors_only if d["id"] == did), str(did)),
+                "Seleccionar Usuario para Reset de Contraseña:",
+                [d["id"] for d in doctors_list],
+                format_func=lambda did: next((f"{d['name']} (@{d.get('username','')})" for d in doctors_list if d["id"] == did), str(did)),
                 key="rst_doc_select"
             )
         with c_p2:
-            rst_pin = st.text_input("Nuevo PIN temporal (mín 4 dígitos):", value="1234", key="rst_pin_input")
+            rst_pin = st.text_input("Nueva Contraseña temporal (mín 4 caracteres):", value="1234", key="rst_pin_input")
         with c_p3:
             st.write("")
             st.write("")
-            if st.button("Restablecer PIN", key="btn_rst_pin", type="primary"):
+            if st.button("Restablecer Contraseña", key="btn_rst_pin", type="primary"):
                 if len(rst_pin) < 4:
-                    st.error("El PIN debe tener al menos 4 dígitos.")
+                    st.error("La contraseña debe tener al menos 4 caracteres.")
                 else:
-                    target_d = next(d for d in doctors_only if d["id"] == rst_doc_id)
+                    target_d = next(d for d in doctors_list if d["id"] == rst_doc_id)
                     with get_connection() as conn:
                         conn.execute("UPDATE doctors SET pin_hash = ? WHERE id = ?", (hash_pin(rst_pin), rst_doc_id))
                         conn.commit()
-                        log_audit(st.session_state["user"]["id"], st.session_state["user"]["name"], "Reset de PIN", f"Se restableció el PIN de {target_d['name']} (CMP {target_d['cmp']})", conn=conn)
-                    st.success(f"¡PIN de {target_d['name']} restablecido exitosamente a: {rst_pin}!")
+                        log_audit(
+                            st.session_state["user"]["id"],
+                            st.session_state["user"]["name"],
+                            "Reset de Contraseña",
+                            f"Se restableció la contraseña de {target_d['name']} (@{target_d.get('username','')})",
+                            conn=conn
+                        )
+                    st.success(f"¡Contraseña de {target_d['name']} restablecida exitosamente a: {rst_pin}!")
 
 st.caption("IPRESS Salud Perú © 2026 - Sistema de Programación Asistencial Oficial.")

@@ -282,6 +282,94 @@ class TestIPRESSScheduling(unittest.TestCase):
         self.assertEqual(res_ok.status_code, 200)
         print("[OK] Test 8: Funcionalidad de reapertura de horario verificada con proteccion estricta por rol ADMIN.")
 
+    def test_09_user_based_passwords_and_rrhh_role(self):
+        """Verifica que las contraseñas se basen en los usuarios y que el usuario RRHH tenga privilegios de gestión."""
+        client = flask_app.app.test_client()
+
+        # 1. Login con usuario y contraseña basada en usuario (no CMP)
+        users_to_test = [
+            ("lcaldas", "caldas2026", "doctor"),
+            ("tchunga", "chunga2026", "doctor"),
+            ("elaureano", "laureano2026", "doctor"),
+            ("csanchez", "sanchez2026", "doctor"),
+            ("esolano", "solano2026", "doctor"),
+            ("jefatura", "jefatura2026", "admin"),
+            ("rrhh", "rrhh2026", "rrhh"),
+        ]
+
+        for uname, pwd, expected_role in users_to_test:
+            res = client.post("/api/auth/login", json={"username": uname, "password": pwd})
+            self.assertEqual(res.status_code, 200, f"Fallo al autenticar {uname}")
+            user_data = res.get_json()["user"]
+            self.assertEqual(user_data["username"], uname)
+            self.assertEqual(user_data["role"], expected_role)
+
+        # 2. Privilegios de RRHH: Puede registrar turnos de cualquier médico y en domingo
+        with client.session_transaction() as sess:
+            sess["user_id"] = 7
+            sess["user_name"] = "Responsable de Recursos Humanos"
+            sess["user_role"] = "rrhh"
+
+        # Día 4 de Octubre 2026 es Domingo: RRHH SÍ tiene permiso
+        res_rrhh_sun = client.post("/api/shifts/update", json={
+            "year": 2026, "month": 10, "day": 4, "doctor_id": 5, "shift_period": "M", "service": "TU"
+        })
+        self.assertEqual(res_rrhh_sun.status_code, 200)
+        self.assertTrue(res_rrhh_sun.get_json()["success"])
+
+        # RRHH puede reabrir el horario
+        res_reopen = client.post("/api/schedule/reopen", json={"year": 2026, "month": 10})
+        self.assertEqual(res_reopen.status_code, 200)
+
+        print("[OK] Test 9: Claves basadas en usuarios y nuevo usuario 'Responsable de Recursos Humanos' (RRHH) verificados con éxito.")
+
+    def test_10_audit_log_3_months_retention(self):
+        """Verifica que el log de cambios almacene hasta 3 meses (90 días) y purgue registros más antiguos."""
+        from database import get_connection, log_audit, prune_audit_logs, get_audit_logs
+
+        # 1. Insertar un registro de hace 100 días (debe ser eliminado) y uno de hace 10 días (debe preservarse)
+        with get_connection() as conn:
+            conn.execute("""
+                INSERT INTO audit_logs (doctor_id, doctor_name, action, details, timestamp)
+                VALUES (1, 'Dra. Caldas', 'Cambio Antiguo', 'Modificación de hace 100 días', datetime('now', '-100 days'))
+            """)
+            conn.execute("""
+                INSERT INTO audit_logs (doctor_id, doctor_name, action, details, timestamp)
+                VALUES (1, 'Dra. Caldas', 'Cambio Reciente', 'Modificación de hace 10 días', datetime('now', '-10 days'))
+            """)
+            conn.commit()
+
+        # 2. Ejecutar poda y obtener logs
+        logs = get_audit_logs(limit=500)
+        actions = [l["action"] for l in logs]
+        details = [l["details"] for l in logs]
+
+        self.assertNotIn("Modificación de hace 100 días", details, "El registro de 100 días debió ser depurado por la política de 90 días (3 meses)")
+        self.assertIn("Modificación de hace 10 días", details, "El registro de hace 10 días debe mantenerse")
+
+        # 3. Endpoint /api/audit-logs
+        client = flask_app.app.test_client()
+        with client.session_transaction() as sess:
+            sess["user_id"] = 7
+            sess["user_name"] = "Responsable de Recursos Humanos"
+            sess["user_role"] = "rrhh"
+
+        res_api = client.get("/api/audit-logs")
+        self.assertEqual(res_api.status_code, 200)
+        data = res_api.get_json()
+        self.assertTrue(data["success"])
+        self.assertEqual(data["retention_policy"], "90 días (3 meses)")
+        self.assertGreaterEqual(len(data["logs"]), 1)
+
+        print("[OK] Test 10: Retención de 3 meses (90 días) en el Log de Cambios verificada correctamente.")
+
+    @classmethod
+    def tearDownClass(cls):
+        """Asegura que el mes de Noviembre 2026 quede limpio y vacío para la programación manual."""
+        with get_connection() as conn:
+            conn.execute("DELETE FROM shifts WHERE year = 2026 AND month = 11")
+            conn.commit()
+
 
 if __name__ == "__main__":
     unittest.main()

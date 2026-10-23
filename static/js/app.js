@@ -151,7 +151,7 @@ function renderDoctorsSwitchMenu() {
 }
 
 function openLoginModalForDoctor(doc) {
-    document.getElementById("loginCmp").value = doc.cmp;
+    document.getElementById("loginCmp").value = doc.username || doc.cmp;
     document.getElementById("loginPin").value = "";
     document.getElementById("loginErrorMsg").classList.add("hidden");
     openModal("modalLogin");
@@ -302,12 +302,22 @@ function renderApprovalBanner() {
         banner.innerHTML = `
             <div class="flex items-center gap-2 text-xs text-blue-900">
                 <i class="fa-solid fa-circle-info text-blue-600"></i>
-                <span><strong>Fase de Propuestas Asistenciales:</strong> Los médicos pueden ingresar su propuesta de ${state.monthInfo.monthly_quota} turnos. El corte para autocompletar turnos es el <strong>Día 10 a las 00:00 horas</strong>.</span>
+                <span><strong>Fase de Propuestas Asistenciales:</strong> Los médicos ingresan su propuesta de ${state.monthInfo.monthly_quota} turnos. El día 10 de cada mes la Jefatura o RRHH completan manualmente el horario del mes siguiente.</span>
             </div>
             <button onclick="triggerValidateApproval()" class="text-xs text-blue-700 hover:text-blue-900 font-bold underline">
                 Validar si ya puede ser aprobado
             </button>
         `;
+    }
+
+    // Actualizar visibilidad de la advertencia institucional del día 10
+    const day10Banner = document.getElementById("day10WarningBanner");
+    if (day10Banner) {
+        if (state.scheduleData && state.scheduleData.is_day_10_passed) {
+            day10Banner.classList.remove("hidden");
+        } else {
+            day10Banner.classList.add("hidden");
+        }
     }
 }
 
@@ -323,7 +333,7 @@ function renderMatrix() {
     const summary = state.scheduleData.quota_summary.doctors_summary;
     const coverage = state.scheduleData.coverage;
     const curUserId = state.currentUser ? state.currentUser.id : null;
-    const isCurAdmin = state.currentUser && state.currentUser.role === "admin";
+    const isCurAdmin = state.currentUser && (state.currentUser.role === "admin" || state.currentUser.role === "rrhh");
 
     // 1. Cabecera Fila 1: Días
     const headerDaysRow = document.getElementById("headerDaysRow");
@@ -932,15 +942,20 @@ function openLoginModal() {
 
 async function handleLoginSubmit(e) {
     e.preventDefault();
-    const cmp = document.getElementById("loginCmp").value;
-    const pin = document.getElementById("loginPin").value;
+    const userVal = document.getElementById("loginCmp").value;
+    const pwdVal = document.getElementById("loginPin").value;
     const errorMsg = document.getElementById("loginErrorMsg");
 
     try {
         const res = await fetch("/api/auth/login", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ cmp: cmp, pin: pin })
+            body: JSON.stringify({
+                username: userVal,
+                password: pwdVal,
+                cmp: userVal,
+                pin: pwdVal
+            })
         });
         const data = await res.json();
         if (data.success) {
@@ -958,6 +973,90 @@ async function handleLoginSubmit(e) {
         errorMsg.innerText = "Error de conexión al servidor.";
         errorMsg.classList.remove("hidden");
     }
+}
+
+// -------------------------------------------------------------
+// LOG DE CAMBIOS Y TRAZABILIDAD (ÚLTIMOS 3 MESES / 90 DÍAS)
+// -------------------------------------------------------------
+
+let currentAuditLogs = [];
+
+function openAuditLogModal() {
+    openModal("modalAuditLog");
+    loadAuditLogs();
+}
+
+async function loadAuditLogs() {
+    const container = document.getElementById("auditLogContent");
+    if (!container) return;
+    container.innerHTML = '<div class="text-center py-6 text-slate-400 text-xs"><i class="fa-solid fa-spinner fa-spin mr-2"></i>Cargando historial de auditoría de los últimos 3 meses...</div>';
+    try {
+        const res = await fetch("/api/audit-logs");
+        const data = await res.json();
+        if (data.success && data.logs) {
+            currentAuditLogs = data.logs;
+            renderAuditLogsTable(currentAuditLogs);
+        } else {
+            container.innerHTML = `<div class="p-4 text-center text-rose-500 text-xs">${data.error || "No se pudo cargar el log de cambios."}</div>`;
+        }
+    } catch (err) {
+        container.innerHTML = '<div class="p-4 text-center text-rose-500 text-xs">Error al conectar con el servidor de auditoría.</div>';
+    }
+}
+
+function renderAuditLogsTable(logs) {
+    const container = document.getElementById("auditLogContent");
+    if (!container) return;
+    if (!logs || logs.length === 0) {
+        container.innerHTML = '<div class="text-center py-8 text-slate-400 text-xs">No hay registros de cambios en los últimos 3 meses.</div>';
+        return;
+    }
+    let html = `
+        <div class="overflow-x-auto border border-slate-200 rounded-xl">
+            <table class="min-w-full divide-y divide-slate-200 text-xs">
+                <thead class="bg-slate-100 text-slate-700 font-bold">
+                    <tr>
+                        <th class="py-2.5 px-3 text-left">Fecha y Hora</th>
+                        <th class="py-2.5 px-3 text-left">Usuario Responsable</th>
+                        <th class="py-2.5 px-3 text-left">Acción</th>
+                        <th class="py-2.5 px-3 text-left">Detalle del Cambio</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-100 bg-white">
+    `;
+    logs.forEach(l => {
+        const tsFormatted = l.timestamp ? l.timestamp.substring(0, 19).replace("T", " ") : "";
+        html += `
+            <tr class="hover:bg-slate-50 transition">
+                <td class="py-2 px-3 text-slate-500 whitespace-nowrap">${tsFormatted}</td>
+                <td class="py-2 px-3 font-semibold text-slate-800">${l.doctor_name || "Sistema"}</td>
+                <td class="py-2 px-3"><span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">${l.action}</span></td>
+                <td class="py-2 px-3 text-slate-600">${l.details || ""}</td>
+            </tr>
+        `;
+    });
+    html += `
+                </tbody>
+            </table>
+        </div>
+    `;
+    container.innerHTML = html;
+}
+
+function filterAuditLogsTable() {
+    const input = document.getElementById("auditSearchInput");
+    if (!input) return;
+    const term = input.value.trim().toLowerCase();
+    if (!term) {
+        renderAuditLogsTable(currentAuditLogs);
+        return;
+    }
+    const filtered = currentAuditLogs.filter(l => 
+        (l.doctor_name && l.doctor_name.toLowerCase().includes(term)) ||
+        (l.action && l.action.toLowerCase().includes(term)) ||
+        (l.details && l.details.toLowerCase().includes(term))
+    );
+    renderAuditLogsTable(filtered);
 }
 
 // -------------------------------------------------------------

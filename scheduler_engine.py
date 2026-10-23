@@ -322,10 +322,10 @@ def record_doctor_shift(
     if not user_id:
         return {"success": False, "error": "Debe iniciar sesión para grabar un turno.", "status_code": 401}
 
-    if user_role != "admin" and int(user_id) != int(doctor_id):
+    if user_role not in ("admin", "rrhh") and int(user_id) != int(doctor_id):
         return {
             "success": False,
-            "error": "ACCESO DENEGADO: Solo el médico titular o el Administrador pueden modificar este turno.",
+            "error": "ACCESO DENEGADO: Solo el médico titular, la Jefatura Médica o Recursos Humanos pueden modificar este turno.",
             "status_code": 403
         }
 
@@ -335,10 +335,10 @@ def record_doctor_shift(
         return {"success": False, "error": "Día inválido para el mes seleccionado.", "status_code": 400}
 
     day_info = month_info["days"][day - 1]
-    if day_info["is_sunday"] and user_role != "admin":
+    if day_info["is_sunday"] and user_role not in ("admin", "rrhh"):
         return {
             "success": False,
-            "error": "DOMINGO BLOQUEADO: Los domingos están bloqueados para los médicos. Solo el Administrador puede programar turnos en domingo.",
+            "error": "DOMINGO BLOQUEADO: Los domingos están bloqueados para los médicos. Solo la Jefatura Médica o Recursos Humanos pueden programar turnos en domingo.",
             "status_code": 403
         }
 
