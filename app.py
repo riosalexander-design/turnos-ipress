@@ -73,40 +73,50 @@ def auth_me():
 
 @app.route("/api/auth/login", methods=["POST"])
 def auth_login():
-    """Inicio de sesión con Usuario (o CMP) y Contraseña."""
+    """Inicio de sesión con selección de Nombre (o ID/Usuario/CMP) y Clave."""
     data = request.json or {}
-    user_input = (data.get("username") or data.get("cmp") or data.get("user") or "").strip()
+    doctor_id = data.get("doctor_id")
+    user_input = (data.get("name") or data.get("username") or data.get("cmp") or data.get("user") or "").strip()
     password = (data.get("password") or data.get("pin") or "").strip()
 
-    if not user_input or not password:
-        return jsonify({"success": False, "error": "Debe ingresar su usuario y contraseña."}), 400
+    if not doctor_id and not user_input:
+        return jsonify({"success": False, "error": "Debe seleccionar su nombre de la lista."}), 400
+    if not password:
+        return jsonify({"success": False, "error": "Debe ingresar su clave de acceso."}), 400
 
     with get_connection() as conn:
-        doc = conn.execute("""
-            SELECT id, name, condition, cmp, username, pin_hash, role
-            FROM doctors
-            WHERE (LOWER(username) = LOWER(?) OR UPPER(cmp) = UPPER(?)) AND is_active = 1
-        """, (user_input, user_input)).fetchone()
-
-        # Compatibilidad alias admin -> jefatura
-        if not doc and user_input.lower() == "admin":
+        if doctor_id:
             doc = conn.execute("""
                 SELECT id, name, condition, cmp, username, pin_hash, role
                 FROM doctors
-                WHERE (username = 'jefatura' OR cmp = 'ADMIN') AND is_active = 1
-            """).fetchone()
+                WHERE id = ? AND is_active = 1
+            """, (doctor_id,)).fetchone()
+        else:
+            doc = conn.execute("""
+                SELECT id, name, condition, cmp, username, pin_hash, role
+                FROM doctors
+                WHERE (LOWER(name) = LOWER(?) OR LOWER(username) = LOWER(?) OR UPPER(cmp) = UPPER(?)) AND is_active = 1
+            """, (user_input, user_input, user_input)).fetchone()
+
+            # Compatibilidad alias admin -> jefatura
+            if not doc and user_input.lower() == "admin":
+                doc = conn.execute("""
+                    SELECT id, name, condition, cmp, username, pin_hash, role
+                    FROM doctors
+                    WHERE (username = 'jefatura' OR cmp = 'ADMIN') AND is_active = 1
+                """).fetchone()
 
         if not doc:
-            return jsonify({"success": False, "error": "Usuario o CMP no encontrado."}), 401
+            return jsonify({"success": False, "error": "Personal no encontrado."}), 401
         
         if doc["pin_hash"] != hash_pin(password):
-            return jsonify({"success": False, "error": "Contraseña incorrecta."}), 401
+            return jsonify({"success": False, "error": "Clave incorrecta."}), 401
         
         session["user_id"] = doc["id"]
         session["user_name"] = doc["name"]
         session["user_role"] = doc["role"]
         
-        log_audit(doc["id"], doc["name"], "Inicio de Sesión", f"Acceso correcto con usuario '{doc['username']}' ({doc['role']})")
+        log_audit(doc["id"], doc["name"], "Inicio de Sesión", f"Acceso correcto de {doc['name']}")
         return jsonify({
             "success": True,
             "user": {

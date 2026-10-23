@@ -150,8 +150,25 @@ function renderDoctorsSwitchMenu() {
     container.appendChild(optionsDiv);
 }
 
+function populateDoctorLoginSelect() {
+    const sel = document.getElementById("loginDoctorSelect");
+    if (!sel || !state.doctorsList) return;
+    const curVal = sel.value;
+    sel.innerHTML = '<option value="">-- Elige tu nombre de la lista --</option>';
+    state.doctorsList.forEach(d => {
+        const opt = document.createElement("option");
+        opt.value = d.id;
+        const tag = d.role === "admin" ? "JEFATURA" : (d.role === "rrhh" ? "RRHH" : d.condition);
+        opt.textContent = `${d.name} (${tag})`;
+        sel.appendChild(opt);
+    });
+    if (curVal) sel.value = curVal;
+}
+
 function openLoginModalForDoctor(doc) {
-    document.getElementById("loginCmp").value = doc.username || doc.cmp;
+    populateDoctorLoginSelect();
+    const sel = document.getElementById("loginDoctorSelect");
+    if (sel) sel.value = doc.id;
     document.getElementById("loginPin").value = "";
     document.getElementById("loginErrorMsg").classList.add("hidden");
     openModal("modalLogin");
@@ -934,7 +951,9 @@ function downloadExcel() {
 // -------------------------------------------------------------
 
 function openLoginModal() {
-    document.getElementById("loginCmp").value = "";
+    populateDoctorLoginSelect();
+    const sel = document.getElementById("loginDoctorSelect");
+    if (sel) sel.value = "";
     document.getElementById("loginPin").value = "";
     document.getElementById("loginErrorMsg").classList.add("hidden");
     openModal("modalLogin");
@@ -942,18 +961,23 @@ function openLoginModal() {
 
 async function handleLoginSubmit(e) {
     e.preventDefault();
-    const userVal = document.getElementById("loginCmp").value;
+    const docId = document.getElementById("loginDoctorSelect").value;
     const pwdVal = document.getElementById("loginPin").value;
     const errorMsg = document.getElementById("loginErrorMsg");
+
+    if (!docId) {
+        errorMsg.innerText = "Por favor selecciona tu nombre de la lista.";
+        errorMsg.classList.remove("hidden");
+        return;
+    }
 
     try {
         const res = await fetch("/api/auth/login", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-                username: userVal,
+                doctor_id: parseInt(docId),
                 password: pwdVal,
-                cmp: userVal,
                 pin: pwdVal
             })
         });
@@ -966,7 +990,7 @@ async function handleLoginSubmit(e) {
             renderKPIs();
             renderMatrix();
         } else {
-            errorMsg.innerText = data.error || "Credenciales incorrectas.";
+            errorMsg.innerText = data.error || "Clave incorrecta.";
             errorMsg.classList.remove("hidden");
         }
     } catch (err) {

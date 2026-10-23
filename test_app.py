@@ -304,6 +304,15 @@ class TestIPRESSScheduling(unittest.TestCase):
             self.assertEqual(user_data["username"], uname)
             self.assertEqual(user_data["role"], expected_role)
 
+        # 1b. Login por selección directa de Nombre / ID en la lista desplegable + clave
+        res_by_id = client.post("/api/auth/login", json={"doctor_id": 1, "password": "caldas2026"})
+        self.assertEqual(res_by_id.status_code, 200)
+        self.assertEqual(res_by_id.get_json()["user"]["name"], "Caldas Pacsi, Lily Katherine")
+
+        res_by_name = client.post("/api/auth/login", json={"name": "Solano Ricaldi, Edward Jhonny", "password": "solano2026"})
+        self.assertEqual(res_by_name.status_code, 200)
+        self.assertEqual(res_by_name.get_json()["user"]["name"], "Solano Ricaldi, Edward Jhonny")
+
         # 2. Privilegios de RRHH: Puede registrar turnos de cualquier médico y en domingo
         with client.session_transaction() as sess:
             sess["user_id"] = 7

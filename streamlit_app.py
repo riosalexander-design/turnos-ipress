@@ -140,59 +140,62 @@ with st.sidebar:
     st.subheader("🔐 Acceso al Sistema")
 
     if st.session_state["user"] is None:
-        user_options = {
-            d["username"]: f"@{d['username']} — {d['name']} ({'JEFATURA' if d['role']=='admin' else ('RRHH' if d['role']=='rrhh' else d['condition'])})"
+        doc_map = {
+            d["id"]: f"{d['name']} ({'JEFATURA' if d['role']=='admin' else ('RRHH' if d['role']=='rrhh' else d['condition'])})"
             for d in doctors_list
         }
         
-        sel_username = st.selectbox("Selecciona tu Usuario:", list(user_options.keys()), format_func=lambda k: user_options[k])
-        input_pwd = st.text_input("Ingresa tu Contraseña personal:", type="password")
+        sel_doc_id = st.selectbox(
+            "Selecciona tu Nombre:",
+            list(doc_map.keys()),
+            format_func=lambda did: doc_map[did]
+        )
+        input_pwd = st.text_input("Ingresa tu Clave de acceso:", type="password")
 
         if st.button("Iniciar Sesión", use_container_width=True, type="primary"):
             if not input_pwd:
-                st.error("Debes ingresar tu contraseña.")
+                st.error("Debes ingresar tu clave.")
             else:
                 with get_connection() as conn:
                     doc_db = conn.execute("""
                         SELECT id, name, condition, cmp, username, pin_hash, role
                         FROM doctors
-                        WHERE username = ? AND is_active = 1
-                    """, (sel_username,)).fetchone()
+                        WHERE id = ? AND is_active = 1
+                    """, (sel_doc_id,)).fetchone()
                     if doc_db and doc_db["pin_hash"] == hash_pin(input_pwd):
                         st.session_state["user"] = dict(doc_db)
-                        log_audit(doc_db["id"], doc_db["name"], "Inicio de Sesión", f"Acceso correcto de usuario @{sel_username}")
+                        log_audit(doc_db["id"], doc_db["name"], "Inicio de Sesión", f"Acceso correcto de {doc_db['name']}")
                         st.rerun()
                     else:
-                        st.error("Contraseña incorrecta.")
-        st.caption("ℹ️ *Claves en función del usuario (ej. caldas2026, rrhh2026, jefatura2026)*")
+                        st.error("Clave incorrecta.")
     else:
         u = st.session_state["user"]
         st.success(f"**{u['name']}**")
-        st.caption(f"Usuario: `@{u.get('username', '')}` | CMP: `{u['cmp']}` | Rol: `{u['role'].upper()}`")
+        st.caption(f"CMP: `{u['cmp']}` | Rol: `{u['role'].upper()}` | Condición: `{u['condition']}`")
 
         if st.button("Cerrar Sesión", use_container_width=True):
             st.session_state["user"] = None
             st.rerun()
 
-        with st.expander("🔑 Cambiar mi Contraseña"):
-            old_p = st.text_input("Contraseña Actual:", type="password", key="old_pin_sb")
-            new_p = st.text_input("Nueva Contraseña (mín 4 caracteres):", type="password", key="new_pin_sb")
-            conf_p = st.text_input("Confirmar Nueva Contraseña:", type="password", key="conf_pin_sb")
-            if st.button("Guardar Nueva Contraseña", use_container_width=True):
+        with st.expander("🔑 Cambiar mi Clave"):
+            old_p = st.text_input("Clave Actual:", type="password", key="old_pin_sb")
+            new_p = st.text_input("Nueva Clave (mín 4 caracteres):", type="password", key="new_pin_sb")
+            conf_p = st.text_input("Confirmar Nueva Clave:", type="password", key="conf_pin_sb")
+            if st.button("Guardar Nueva Clave", use_container_width=True):
                 if len(new_p) < 4:
-                    st.error("La nueva contraseña debe tener al menos 4 caracteres.")
+                    st.error("La nueva clave debe tener al menos 4 caracteres.")
                 elif new_p != conf_p:
-                    st.error("Las contraseñas no coinciden.")
+                    st.error("Las claves no coinciden.")
                 else:
                     with get_connection() as conn:
                         chk = conn.execute("SELECT pin_hash FROM doctors WHERE id = ?", (u["id"],)).fetchone()
                         if chk and chk["pin_hash"] == hash_pin(old_p):
                             conn.execute("UPDATE doctors SET pin_hash = ? WHERE id = ?", (hash_pin(new_p), u["id"]))
                             conn.commit()
-                            log_audit(u["id"], u["name"], "Cambio de Contraseña", "Contraseña actualizada exitosamente", conn=conn)
-                            st.success("¡Contraseña actualizada con éxito!")
+                            log_audit(u["id"], u["name"], "Cambio de Clave", "Clave actualizada exitosamente", conn=conn)
+                            st.success("¡Clave actualizada con éxito!")
                         else:
-                            st.error("La contraseña actual no es correcta.")
+                            st.error("La clave actual no es correcta.")
 
 # -------------------------------------------------------------------
 # DATOS DEL MES Y REGLAS
@@ -240,7 +243,7 @@ def open_shift_recording_modal(default_day: int = None):
         target_doc_id = st.selectbox(
             "1. Seleccionar Médico Cirujano:",
             [doc["id"] for doc in doctors_only],
-            format_func=lambda did: next((f"{d['name']} ({d['condition']} - CMP: {d['cmp']} - @{d['username']})" for d in doctors_only if d["id"] == did), str(did)),
+            format_func=lambda did: next((f"{d['name']} ({d['condition']} - CMP: {d['cmp']})" for d in doctors_only if d["id"] == did), str(did)),
             key="dlg_admin_doc"
         )
         target_doc = next((d for d in doctors_only if d["id"] == target_doc_id), doctors_only[0])
@@ -248,7 +251,7 @@ def open_shift_recording_modal(default_day: int = None):
         target_name = target_doc["name"]
         selectable_days = [d["day"] for d in days]
     else:
-        st.markdown(f"**👨‍⚕️ Médico Cirujano:** `{u['name']}` (CMP: `{u['cmp']}` | Usuario: `@{u['username']}`)")
+        st.markdown(f"**👨‍⚕️ Médico Cirujano:** `{u['name']}` (CMP: `{u['cmp']}`)")
         st.caption("🔒 Los domingos están bloqueados para los médicos. Solo puedes modificar tu propia programación.")
         target_id = u["id"]
         target_name = u["name"]
@@ -769,34 +772,33 @@ if is_admin_or_rrhh:
             st.info("No hay registros de auditoría aún.")
 
     with adm_tab2:
-        st.markdown("##### Nómina Institucional de Usuarios")
+        st.markdown("##### Nómina Institucional de Personal")
         doc_rows = [{
             "ID": d["id"],
             "Nombre Completo": d["name"],
             "Condición": d["condition"],
             "CMP": d["cmp"],
-            "Usuario": f"@{d.get('username', '')}",
             "Rol": d["role"].upper()
         } for d in doctors_list]
         st.dataframe(pd.DataFrame(doc_rows), use_container_width=True, hide_index=True)
 
-        st.markdown("##### 🔑 Restablecer Contraseña de Acceso")
+        st.markdown("##### 🔑 Restablecer Clave de Acceso")
         c_p1, c_p2, c_p3 = st.columns([2, 1.5, 1])
         with c_p1:
             rst_doc_id = st.selectbox(
-                "Seleccionar Usuario para Reset de Contraseña:",
+                "Seleccionar Personal para Reset de Clave:",
                 [d["id"] for d in doctors_list],
-                format_func=lambda did: next((f"{d['name']} (@{d.get('username','')})" for d in doctors_list if d["id"] == did), str(did)),
+                format_func=lambda did: next((f"{d['name']} ({d['cmp']})" for d in doctors_list if d["id"] == did), str(did)),
                 key="rst_doc_select"
             )
         with c_p2:
-            rst_pin = st.text_input("Nueva Contraseña temporal (mín 4 caracteres):", value="1234", key="rst_pin_input")
+            rst_pin = st.text_input("Nueva Clave temporal (mín 4 caracteres):", value="1234", key="rst_pin_input")
         with c_p3:
             st.write("")
             st.write("")
-            if st.button("Restablecer Contraseña", key="btn_rst_pin", type="primary"):
+            if st.button("Restablecer Clave", key="btn_rst_pin", type="primary"):
                 if len(rst_pin) < 4:
-                    st.error("La contraseña debe tener al menos 4 caracteres.")
+                    st.error("La clave debe tener al menos 4 caracteres.")
                 else:
                     target_d = next(d for d in doctors_list if d["id"] == rst_doc_id)
                     with get_connection() as conn:
@@ -805,10 +807,10 @@ if is_admin_or_rrhh:
                         log_audit(
                             st.session_state["user"]["id"],
                             st.session_state["user"]["name"],
-                            "Reset de Contraseña",
-                            f"Se restableció la contraseña de {target_d['name']} (@{target_d.get('username','')})",
+                            "Reset de Clave",
+                            f"Se restableció la clave de {target_d['name']} ({target_d['cmp']})",
                             conn=conn
                         )
-                    st.success(f"¡Contraseña de {target_d['name']} restablecida exitosamente a: {rst_pin}!")
+                    st.success(f"¡Clave de {target_d['name']} restablecida exitosamente a: {rst_pin}!")
 
 st.caption("IPRESS Salud Perú © 2026 - Sistema de Programación Asistencial Oficial.")
