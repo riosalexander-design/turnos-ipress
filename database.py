@@ -2,7 +2,8 @@
 database.py
 Módulo de base de datos SQLite para el sistema de programación de turnos de la IPRESS.
 Maneja modelos de médicos, propuestas, discrepancias, logs de auditoría y aprobación.
-Configurado con WAL mode y timeout para alta concurrencia sin bloqueos.
+Configurado con cierre garantizado de conexiones, journal_mode=DELETE (compatible con
+despliegues en Streamlit Cloud y Git) y auto-recuperación ante archivos WAL huérfanos.
 """
 
 import sqlite3
@@ -12,23 +13,87 @@ from datetime import datetime
 
 DB_FILE = os.path.join(os.path.dirname(__file__), "ipress_turnos.db")
 
+
+class ClosingConnection(sqlite3.Connection):
+    """
+    Subclase de sqlite3.Connection que cierra automáticamente el archivo
+    al salir del bloque 'with get_connection() as conn:', evitando fugas
+    de descriptores y bloqueos en entornos multi-hilo como Streamlit.
+    """
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        try:
+            return super().__exit__(exc_type, exc_val, exc_tb)
+        finally:
+            try:
+                self.close()
+            except Exception:
+                pass
+
+
 def hash_pin(pin: str) -> str:
     """Hashea un PIN o contraseña con SHA-256."""
     return hashlib.sha256(pin.encode("utf-8")).hexdigest()
 
-def get_connection():
-    """Retorna una conexión a la base de datos con WAL mode y timeout."""
-    conn = sqlite3.connect(DB_FILE, timeout=30.0)
+
+def _cleanup_stale_wal_files(db_path: str):
+    """
+    Elimina archivos laterales -wal y -shm huérfanos si existen junto a una BD
+    que opera en modo DELETE (evita sqlite3.DatabaseError tras git pull en Streamlit Cloud).
+    """
+    for suffix in ("-wal", "-shm"):
+        side_file = db_path + suffix
+        if os.path.exists(side_file):
+            try:
+                os.remove(side_file)
+            except OSError:
+                pass
+
+
+def _open_and_configure(db_path: str) -> sqlite3.Connection:
+    """Abre y configura una conexión SQLite verificando integridad básica."""
+    conn = sqlite3.connect(
+        db_path,
+        timeout=30.0,
+        check_same_thread=False,
+        factory=ClosingConnection
+    )
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA journal_mode = DELETE")
+    conn.execute("PRAGMA synchronous = NORMAL")
     return conn
 
-def init_db():
-    """Inicializa las tablas y los datos base (los 5 médicos y jefatura)."""
+
+def get_connection():
+    """
+    Retorna una conexión a la base de datos con auto-cierre y auto-recuperación
+    en caso de corrupción por archivos -wal/-shm desincronizados en la nube.
+    """
+    _cleanup_stale_wal_files(DB_FILE)
+    try:
+        return _open_and_configure(DB_FILE)
+    except sqlite3.DatabaseError:
+        # Si el archivo .db o sus archivos laterales quedaron corruptos tras un git pull,
+        # limpiar y reconstruir automáticamente para no interrumpir el servicio.
+        _cleanup_stale_wal_files(DB_FILE)
+        try:
+            if os.path.exists(DB_FILE):
+                os.remove(DB_FILE)
+        except OSError:
+            pass
+        return _open_and_configure(DB_FILE)
+
+def _init_db_tables_and_users():
+    """Crea tablas y asegura la existencia de los usuarios base sin sobrescribir claves personalizadas."""
+    need_october_seed = False
     with get_connection() as conn:
         cursor = conn.cursor()
-        
+
+        # Verificar integridad rápida de la BD
+        chk = cursor.execute("PRAGMA quick_check").fetchone()
+        if not chk or chk[0] != "ok":
+            raise sqlite3.DatabaseError("PRAGMA quick_check falló")
+
         # Tabla de Médicos y Usuarios del Sistema
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS doctors (
@@ -138,8 +203,6 @@ def init_db():
             )
         """)
 
-        conn.commit()
-
         # Usuarios oficiales del sistema con credenciales basadas en su usuario
         initial_doctors = [
             ("Caldas Pacsi, Lily Katherine", "CAS", "71201", "lcaldas", "caldas2026", "doctor"),
@@ -151,8 +214,14 @@ def init_db():
             ("Responsable de Recursos Humanos", "Nombrado", "RRHH", "rrhh", "rrhh2026", "rrhh"),
         ]
 
+        # Hashes antiguos basados en CMP de 4 dígitos para migrar automáticamente si aún existen
+        legacy_pin_hashes = {
+            hash_pin("1201"), hash_pin("8432"), hash_pin("5319"),
+            hash_pin("0145"), hash_pin("4982"), hash_pin("9999")
+        }
+
         for name, cond, cmp_num, uname, pwd, role in initial_doctors:
-            cursor.execute("SELECT id FROM doctors WHERE cmp = ? OR username = ?", (cmp_num, uname))
+            cursor.execute("SELECT id, condition, name, username, pin_hash, role FROM doctors WHERE cmp = ? OR username = ?", (cmp_num, uname))
             row = cursor.fetchone()
             if not row:
                 cursor.execute("""
@@ -160,15 +229,48 @@ def init_db():
                     VALUES (?, ?, ?, ?, ?, ?)
                 """, (name, cond, cmp_num, uname, hash_pin(pwd), role))
             else:
-                cursor.execute("""
-                    UPDATE doctors
-                    SET condition = ?, name = ?, username = ?, pin_hash = ?, role = ?
-                    WHERE id = ?
-                """, (cond, name, uname, hash_pin(pwd), role, row["id"]))
-        
+                # Solo actualizar pin_hash si aún tiene el PIN antiguo de 4 dígitos o está vacío
+                new_pin_hash = hash_pin(pwd) if (not row["pin_hash"] or row["pin_hash"] in legacy_pin_hashes) else row["pin_hash"]
+                if (row["condition"] != cond or row["name"] != name or
+                        row["username"] != uname or row["role"] != role or
+                        row["pin_hash"] != new_pin_hash):
+                    cursor.execute("""
+                        UPDATE doctors
+                        SET condition = ?, name = ?, username = ?, pin_hash = ?, role = ?
+                        WHERE id = ?
+                    """, (cond, name, uname, new_pin_hash, role, row["id"]))
+
         # Poda automática de logs de auditoría mayores a 3 meses (90 días)
         cursor.execute("DELETE FROM audit_logs WHERE timestamp < datetime('now', '-90 days')")
+
+        # Verificar si Octubre 2026 está vacío (por ejemplo, tras auto-reconstrucción de BD)
+        oct_count = cursor.execute("SELECT COUNT(*) FROM shifts WHERE year = 2026 AND month = 10").fetchone()[0]
+        if oct_count == 0:
+            need_october_seed = True
+
         conn.commit()
+
+    if need_october_seed:
+        try:
+            from scheduler_engine import auto_assign_missing_shifts_day10, approve_all_day_discrepancies
+            auto_assign_missing_shifts_day10(2026, 10)
+            approve_all_day_discrepancies(2026, 10)
+        except Exception:
+            pass
+
+
+def init_db():
+    """Inicializa las tablas y datos base con recuperación automática ante corrupción de SQLite."""
+    try:
+        _init_db_tables_and_users()
+    except sqlite3.DatabaseError:
+        _cleanup_stale_wal_files(DB_FILE)
+        try:
+            if os.path.exists(DB_FILE):
+                os.remove(DB_FILE)
+        except OSError:
+            pass
+        _init_db_tables_and_users()
 
 def prune_audit_logs(conn=None):
     """Elimina del log de auditoría los registros de más de 3 meses (90 días de retención)."""

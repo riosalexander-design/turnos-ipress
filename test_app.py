@@ -372,6 +372,44 @@ class TestIPRESSScheduling(unittest.TestCase):
 
         print("[OK] Test 10: Retención de 3 meses (90 días) en el Log de Cambios verificada correctamente.")
 
+    def test_11_sqlite_resilience_and_connection_management(self):
+        """Verifica que get_connection() sea auto-recuperable y resistente ante archivos WAL/SHM huérfanos."""
+        import os
+        from database import DB_FILE, hash_pin
+
+        # 1. Simular archivos laterales huérfanos desincronizados
+        wal_file = DB_FILE + "-wal"
+        shm_file = DB_FILE + "-shm"
+        with open(wal_file, "w") as f:
+            f.write("corrupted_wal_test_data")
+        with open(shm_file, "w") as f:
+            f.write("corrupted_shm_test_data")
+
+        # 2. get_connection() debe limpiar automáticamente los huérfanos y conectarse sin DatabaseError
+        with get_connection() as conn:
+            row = conn.execute("SELECT COUNT(*) FROM doctors").fetchone()
+            self.assertGreater(row[0], 0)
+
+        # Verificar que los archivos huérfanos fueron eliminados
+        self.assertFalse(os.path.exists(wal_file))
+        self.assertFalse(os.path.exists(shm_file))
+
+        # 3. Verificar que cambiar clave persista y no sea sobrescrito por init_db()
+        with get_connection() as conn:
+            conn.execute("UPDATE doctors SET pin_hash = ? WHERE id = 1", (hash_pin("nueva_clave_secreta"),))
+            conn.commit()
+
+        init_db()  # No debe revertir 'nueva_clave_secreta'
+
+        with get_connection() as conn:
+            row = conn.execute("SELECT pin_hash FROM doctors WHERE id = 1").fetchone()
+            self.assertEqual(row[0], hash_pin("nueva_clave_secreta"))
+            # Restaurar la clave oficial
+            conn.execute("UPDATE doctors SET pin_hash = ? WHERE id = 1", (hash_pin("caldas2026"),))
+            conn.commit()
+
+        print("[OK] Test 11: Auto-recuperación de SQLite ante archivos WAL/SHM huérfanos y preservación de claves verificadas.")
+
     @classmethod
     def tearDownClass(cls):
         """Asegura que el mes de Noviembre 2026 quede limpio y vacío para la programación manual."""

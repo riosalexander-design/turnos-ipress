@@ -1,0 +1,5 @@
+# Git attributes para la base de datos SQLite y archivos binarios
+*.db binary
+*.xlsx binary
+*.ico binary
+*.png binary

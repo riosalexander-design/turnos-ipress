@@ -52,14 +52,20 @@ def get_doctor_quota_summary(year: int, month: int) -> dict:
             ORDER BY condition DESC, name ASC
         """).fetchall()
 
+        all_shifts = conn.execute("""
+            SELECT doctor_id, day, shift_period, service, is_proposal
+            FROM shifts
+            WHERE year = ? AND month = ?
+        """, (year, month)).fetchall()
+
+        shifts_by_doc = {}
+        for s in all_shifts:
+            shifts_by_doc.setdefault(s["doctor_id"], []).append(s)
+
         summary = {}
         for doc in doctors:
             doc_id = doc["id"]
-            shifts = conn.execute("""
-                SELECT day, shift_period, service, is_proposal
-                FROM shifts
-                WHERE year = ? AND month = ? AND doctor_id = ?
-            """, (year, month, doc_id)).fetchall()
+            shifts = shifts_by_doc.get(doc_id, [])
 
             count_6h = 0
             count_12h = 0
@@ -129,18 +135,6 @@ def get_daily_coverage(year: int, month: int) -> dict:
     coverage = {}
 
     with get_connection() as conn:
-        # Asegurar que la tabla exista
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS approved_day_exceptions (
-                year INTEGER NOT NULL,
-                month INTEGER NOT NULL,
-                day INTEGER NOT NULL,
-                approved_by TEXT NOT NULL,
-                approved_at TEXT NOT NULL,
-                notes TEXT,
-                PRIMARY KEY(year, month, day)
-            )
-        """)
         exc_rows = conn.execute("""
             SELECT day, approved_by, approved_at, notes
             FROM approved_day_exceptions
@@ -148,16 +142,21 @@ def get_daily_coverage(year: int, month: int) -> dict:
         """, (year, month)).fetchall()
         approved_exceptions = {r["day"]: dict(r) for r in exc_rows}
 
+        all_month_rows = conn.execute("""
+            SELECT s.day, s.shift_period, s.service, s.doctor_id, d.name
+            FROM shifts s
+            JOIN doctors d ON s.doctor_id = d.id
+            WHERE s.year = ? AND s.month = ?
+        """, (year, month)).fetchall()
+
+        rows_by_day = {}
+        for r in all_month_rows:
+            rows_by_day.setdefault(r["day"], []).append(r)
+
         for d in range(1, num_days + 1):
             day_info = month_info["days"][d - 1]
             is_sunday = day_info["is_sunday"]
-
-            rows = conn.execute("""
-                SELECT s.shift_period, s.service, s.doctor_id, d.name
-                FROM shifts s
-                JOIN doctors d ON s.doctor_id = d.id
-                WHERE s.year = ? AND s.month = ? AND s.day = ?
-            """, (year, month, d)).fetchall()
+            rows = rows_by_day.get(d, [])
 
             morning_docs = []
             afternoon_docs = []
@@ -417,13 +416,19 @@ def detect_discrepancies(year: int, month: int, current_sim_time: datetime = Non
     discrepancies = []
 
     with get_connection() as conn:
+        all_month_shifts = conn.execute("""
+            SELECT s.id, s.day, s.shift_period, s.service, s.doctor_id, d.name
+            FROM shifts s
+            JOIN doctors d ON s.doctor_id = d.id
+            WHERE s.year = ? AND s.month = ?
+        """, (year, month)).fetchall()
+
+        shifts_by_day = {}
+        for s in all_month_shifts:
+            shifts_by_day.setdefault(s["day"], []).append(s)
+
         for d in range(1, month_info["num_days"] + 1):
-            shifts_day = conn.execute("""
-                SELECT s.id, s.shift_period, s.service, s.doctor_id, d.name
-                FROM shifts s
-                JOIN doctors d ON s.doctor_id = d.id
-                WHERE s.year = ? AND s.month = ? AND s.day = ?
-            """, (year, month, d)).fetchall()
+            shifts_day = shifts_by_day.get(d, [])
 
             # Revisar servicios en Mañana
             m_services = {}
@@ -527,6 +532,7 @@ def sync_discrepancies_db(year: int, month: int, current_sim_time: datetime = No
     active_discs = detect_discrepancies(year, month, current_sim_time)
     with get_connection() as conn:
         active_keys = set()
+        has_changes = False
         for d in active_discs:
             key = (d["year"], d["month"], d["day"], d["shift_period"], d["service"], d["doctor1_id"], d["doctor2_id"])
             active_keys.add(key)
@@ -548,6 +554,7 @@ def sync_discrepancies_db(year: int, month: int, current_sim_time: datetime = No
                     d["doctor1_id"], d["doctor2_id"], d["conflict_type"], d["description"],
                     d["suggested_alternative"], d["deadline_datetime"]
                 ))
+                has_changes = True
         
         open_db = conn.execute("""
             SELECT id, year, month, day, shift_period, service, doctor1_id, doctor2_id
@@ -565,8 +572,10 @@ def sync_discrepancies_db(year: int, month: int, current_sim_time: datetime = No
                         resolution_details = 'Conflicto subsanado en la programación.'
                     WHERE id = ?
                 """, (row["id"],))
+                has_changes = True
 
-        conn.commit()
+        if has_changes:
+            conn.commit()
 
 def apply_discrepancy_alternative(discrepancy_id: int) -> bool:
     """

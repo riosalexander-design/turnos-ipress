@@ -5,7 +5,6 @@ Compatible 100% con Streamlit Community Cloud (share.streamlit.io).
 """
 
 import io
-import importlib
 from datetime import datetime
 import pandas as pd
 import streamlit as st
@@ -13,11 +12,6 @@ import database
 import holidays_pe
 import scheduler_engine
 import exporter
-
-importlib.reload(database)
-importlib.reload(holidays_pe)
-importlib.reload(scheduler_engine)
-importlib.reload(exporter)
 
 from database import init_db, get_connection, hash_pin, log_audit, get_audit_logs, prune_audit_logs
 from holidays_pe import get_month_info
@@ -92,6 +86,29 @@ st.markdown("""
     .table-matrix th {
         background-color: #1e293b;
         color: white;
+    }
+    .table-matrix th:first-child, .table-matrix td:first-child {
+        position: sticky;
+        left: 0;
+        background-color: #f8fafc;
+        z-index: 2;
+        box-shadow: 2px 0 4px -2px rgba(0,0,0,0.15);
+    }
+    .table-matrix tr:first-child th:first-child, .table-matrix tr:nth-child(2) th:first-child {
+        background-color: #1e293b;
+        color: white;
+        z-index: 3;
+    }
+    @media (max-width: 768px) {
+        .badge-shift {
+            font-size: 9.5px;
+            padding: 2px 3px;
+        }
+        .table-matrix th, .table-matrix td {
+            min-width: 30px;
+            padding: 3px 1px;
+            font-size: 10px;
+        }
     }
     .col-sun { background-color: #e2e8f0; color: #64748b; }
     .col-sat { background-color: #f8fafc; }
@@ -390,8 +407,15 @@ if st.session_state.get("shift_saved_confirmation"):
     st.session_state["shift_saved_confirmation"] = None
 
 # Banner de Estado General
+total_month_shifts = sum(d.get("total_equivalent_shifts", 0) for d in doc_summary.values())
+
 if approval_status.get("is_approved"):
     st.success(f"🏆 **HORARIO APROBADO OFICIAL IPRESS** | Aprobado por: {approval_status.get('approved_by')} | Código de Integridad: `#{approval_status.get('approval_hash')}`")
+elif total_month_shifts == 0:
+    st.info(
+        f"📋 **Mes en Fase Inicial de Programación ({month_info['month_name']} {selected_year}):** Aún no se han registrado turnos para este mes. "
+        f"Cada médico cirujano, la Jefatura Médica o el Responsable de RRHH pueden iniciar sesión y pulsar **'➕ Grabar / Modificar Turno'** para registrar los turnos."
+    )
 elif len(unapproved_service_alert_days) > 0:
     st.warning(
         f"⚠️ **Alerta de Cobertura de Servicios:** Existen **{len(unapproved_service_alert_days)} día(s)** en los que no se cubren todos los servicios requeridos "
@@ -607,7 +631,7 @@ if len(service_alert_days) > 0:
     st.markdown("---")
     with st.expander(
         f"🚨 Alertas de Cobertura de Servicios Diarios ({len(unapproved_service_alert_days)} pendientes de aprobación de Jefatura/RRHH)",
-        expanded=(len(unapproved_service_alert_days) > 0)
+        expanded=(len(unapproved_service_alert_days) > 0 and total_month_shifts > 0)
     ):
         st.markdown(
             "**Regla de Cobertura de Servicios:** En las **Mañanas** se debe cubrir `Tópico de Urgencias (TU)`, `Consultorio de Medicina (CE)` y `Telesalud/TBC/MCI (TS)`. "
