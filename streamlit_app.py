@@ -64,13 +64,11 @@ st.markdown("""
         margin: 1px;
         line-height: 1.15;
     }
-    .badge-12h { background-color: #fef3c7; color: #92400e; border: 1px solid #fcd34d; }
-    .badge-DES { background-color: #f3e8ff; color: #6b21a8; border: 1px solid #d8b4fe; }
-    .badge-M-TU { background-color: #ffedd5; color: #9a3412; border: 1px solid #fed7aa; }
-    .badge-M-CE { background-color: #dbeafe; color: #1e40af; border: 1px solid #bfdbfe; }
-    .badge-M-TS { background-color: #d1fae5; color: #065f46; border: 1px solid #a7f3d0; }
-    .badge-T-TU { background-color: #ffedd5; color: #9a3412; border: 1px solid #fed7aa; }
-    .badge-T-CE { background-color: #dbeafe; color: #1e40af; border: 1px solid #bfdbfe; }
+    .badge-12h { background-color: #bae6fd; color: #0369a1; border: 1px solid #7dd3fc; }
+    .badge-DES { background-color: #ede9fe; color: #5b21b6; border: 1px solid #c4b5fd; font-style: italic; }
+    .badge-LIBRE { background-color: #f5f3ff; color: #6b21a8; border: 1px solid #ddd6fe; font-weight: 600; }
+    .badge-M-TU, .badge-M-CE, .badge-M-TS { background-color: #fef08a; color: #713f12; border: 1px solid #facc15; }
+    .badge-T-TU, .badge-T-CE { background-color: #bbf7d0; color: #14532d; border: 1px solid #86efac; }
     .badge-empty { color: #cbd5e1; }
     .table-matrix {
         width: 100%;
@@ -549,7 +547,7 @@ for doc in doctors_only:
         cell_cls = "col-sun" if d["is_sunday"] else ("col-hol" if d["is_holiday"] else ("col-sat" if d["is_saturday"] else ""))
         shift = d_sum["days"].get(d["day"])
         
-        if shift:
+        if shift and shift.get("shift_period") != "LIBRE":
             sp = shift["shift_period"]
             srv = shift["service"]
             if sp == "12h":
@@ -561,7 +559,7 @@ for doc in doctors_only:
                 b_cls = f"badge-{tag}" if f"badge-{tag}" in ("badge-M-TU", "badge-M-CE", "badge-M-TS", "badge-T-TU", "badge-T-CE") else "badge-12h"
                 b_html = f"<span class='badge-shift {b_cls}'>{tag}</span>"
         else:
-            b_html = "<span class='badge-empty'>🔒</span>" if (d["is_sunday"] and not is_admin_user) else "<span class='badge-empty'>•</span>"
+            b_html = "<span class='badge-shift badge-LIBRE'>Libre</span>"
 
         html.append(f"<td class='{cell_cls}'>{b_html}</td>")
 

@@ -450,7 +450,7 @@ function renderMatrix() {
 
             const shift = docSummary.days[d.day];
 
-            if (shift) {
+            if (shift && shift.shift_period !== "LIBRE") {
                 const sp = shift.shift_period;
                 const srv = shift.service;
                 let badgeClass = "shift-badge ";
@@ -465,11 +465,19 @@ function renderMatrix() {
                     badgeClass += "shift-DES";
                     badgeText = "DES";
                     subText = "12h";
+                } else if (sp === "M") {
+                    badgeClass += `shift-M shift-M-${srv}`;
+                    badgeText = `M-${srv}`;
+                    subText = "Mañ";
+                } else if (sp === "T") {
+                    badgeClass += `shift-T shift-T-${srv}`;
+                    badgeText = `T-${srv}`;
+                    subText = "Tar";
                 } else {
                     const tag = `${sp}-${srv}`;
                     badgeClass += `shift-${tag}`;
                     badgeText = tag;
-                    subText = sp === "M" ? "Mañ" : "Tar";
+                    subText = sp === "M" ? "Mañ" : (sp === "T" ? "Tar" : sp);
                 }
 
                 td.innerHTML = `
@@ -479,7 +487,12 @@ function renderMatrix() {
                     </div>
                 `;
             } else {
-                td.innerHTML = `<span class="shift-empty text-[10px]">•</span>`;
+                // Día libre (sin turno programado o marcado como LIBRE) - violeta con etiqueta 'Libre'
+                td.innerHTML = `
+                    <div class="shift-badge shift-LIBRE" title="${getShiftFullDescription('LIBRE', 'LIBRE', doc.name, d.day)}">
+                        <span class="text-[9px]">Libre</span>
+                    </div>
+                `;
             }
 
             // Click listener estricto por médico
@@ -625,6 +638,7 @@ async function approveDayDiscrepancy(day, alertMsg) {
 function getShiftFullDescription(sp, srv, docName, day) {
     if (sp === "12h") return `Día ${day}: ${docName} - Turno 12h (${srv})`;
     if (sp === "DES") return `Día ${day}: ${docName} - Descanso de guardia obligatorio post-12h`;
+    if (sp === "LIBRE") return `Día ${day}: ${docName} - Día Libre`;
     const period = sp === "M" ? "Mañana" : "Tarde";
     const serviceName = srv === "TU" ? "Tópico de Urgencias" : (srv === "CE" ? "Consultorio de Medicina" : "Telesalud/TBC/MCI");
     return `Día ${day}: ${docName} - ${period} en ${serviceName}`;
@@ -675,7 +689,17 @@ function renderServiceOptions(period, defaultService) {
         container.innerHTML = `
             <div class="p-2.5 rounded-lg bg-purple-50 border border-purple-200 text-xs text-purple-900 flex items-center gap-2">
                 <i class="fa-solid fa-moon text-purple-600"></i>
-                <span>Descanso de guardia obligatorio posterior a un turno de 12 horas.</span>
+                <span>Descanso de guardia obligatorio posterior a un turno de 12 horas (Violeta).</span>
+            </div>
+        `;
+        return;
+    }
+
+    if (period === "LIBRE") {
+        container.innerHTML = `
+            <div class="p-2.5 rounded-lg bg-purple-50 border border-purple-200 text-xs text-purple-900 flex items-center gap-2">
+                <i class="fa-solid fa-umbrella-beach text-purple-600"></i>
+                <span>Día Libre programado para el médico (Violeta con etiqueta Libre).</span>
             </div>
         `;
         return;
@@ -684,21 +708,21 @@ function renderServiceOptions(period, defaultService) {
     let options = [];
     if (period === "M") {
         options = [
-            { code: "TU", name: "Tópico de Urgencias (TU)", badge: "bg-orange-100 text-orange-800" },
-            { code: "CE", name: "Consultorio de Medicina (CE)", badge: "bg-blue-100 text-blue-800" },
-            { code: "TS", name: "Telesalud/TBC/MCI (TS)", badge: "bg-emerald-100 text-emerald-800" }
+            { code: "TU", name: "Tópico de Urgencias (TU)", badge: "bg-yellow-100 text-yellow-800 border border-yellow-300" },
+            { code: "CE", name: "Consultorio de Medicina (CE)", badge: "bg-yellow-100 text-yellow-800 border border-yellow-300" },
+            { code: "TS", name: "Telesalud/TBC/MCI (TS)", badge: "bg-yellow-100 text-yellow-800 border border-yellow-300" }
         ];
     } else if (period === "T") {
         options = [
-            { code: "TU", name: "Tópico de Urgencias (TU)", badge: "bg-orange-100 text-orange-800" },
-            { code: "CE", name: "Consultorio de Medicina (CE)", badge: "bg-blue-100 text-blue-800" }
+            { code: "TU", name: "Tópico de Urgencias (TU)", badge: "bg-green-100 text-green-800 border border-green-300" },
+            { code: "CE", name: "Consultorio de Medicina (CE)", badge: "bg-green-100 text-green-800 border border-green-300" }
         ];
     } else if (period === "12h") {
         options = [
-            { code: "TS+TU", name: "Mañana Telesalud/TBC/MCI + Tarde Tópico de Urgencias (TS+TU)", badge: "bg-emerald-100 text-emerald-800" },
-            { code: "TU+CE", name: "Mañana Urgencias + Tarde Consultorio (TU+CE)", badge: "bg-amber-100 text-amber-800" },
-            { code: "CE+TU", name: "Mañana Consultorio + Tarde Urgencias (CE+TU)", badge: "bg-amber-100 text-amber-800" },
-            { code: "TU+TU", name: "Mañana Urgencias + Tarde Urgencias (TU+TU)", badge: "bg-amber-100 text-amber-800" }
+            { code: "TS+TU", name: "Mañana Telesalud/TBC/MCI + Tarde Tópico de Urgencias (TS+TU)", badge: "bg-sky-100 text-sky-800 border border-sky-300" },
+            { code: "TU+CE", name: "Mañana Urgencias + Tarde Consultorio (TU+CE)", badge: "bg-sky-100 text-sky-800 border border-sky-300" },
+            { code: "CE+TU", name: "Mañana Consultorio + Tarde Urgencias (CE+TU)", badge: "bg-sky-100 text-sky-800 border border-sky-300" },
+            { code: "TU+TU", name: "Mañana Urgencias + Tarde Urgencias (TU+TU)", badge: "bg-sky-100 text-sky-800 border border-sky-300" }
         ];
     }
 
@@ -738,7 +762,11 @@ async function handleSaveCurrentShift() {
     if (!state.activeCell) return;
     const period = document.querySelector("input[name='optPeriod']:checked").value;
     let service = "DES";
-    if (period !== "DES") {
+    if (period === "DES") {
+        service = "DES";
+    } else if (period === "LIBRE") {
+        service = "LIBRE";
+    } else {
         const checkedSrv = document.querySelector("input[name='optService']:checked");
         service = checkedSrv ? checkedSrv.value : "TU";
     }

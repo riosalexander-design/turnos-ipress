@@ -21,14 +21,14 @@ COLOR_HOLIDAY = "FCE4D6"          # Feriado salmón pastel
 
 # Colores de turnos
 SHIFT_COLORS = {
-    "12h": {"fill": "FFE699", "font": "7F6000"},  # Amarillo/Dorado 12h
-    "M-TU": {"fill": "F8CBAD", "font": "C65911"}, # Coral Urgencias
-    "M-CE": {"fill": "BDD7EE", "font": "1F4E79"}, # Azul Consultorio
-    "M-TS": {"fill": "C6E0B4", "font": "375623"}, # Verde Telesalud
-    "T-TU": {"fill": "F4B084", "font": "833C0C"}, # Naranja Urgencias Tarde
-    "T-CE": {"fill": "9BC2E6", "font": "1B365D"}, # Celeste Consultorio Tarde
-    "DES":  {"fill": "E2EFDA", "font": "375623"}, # Verde descanso post-12h
-    "LIBRE": {"fill": "F2F2F2", "font": "595959"} # Gris libre
+    "12h": {"fill": "BAE6FD", "font": "0369A1"},  # Celeste 12h
+    "M-TU": {"fill": "FEF08A", "font": "713F12"}, # Amarillo Mañana Urgencias
+    "M-CE": {"fill": "FEF08A", "font": "713F12"}, # Amarillo Mañana Consultorio
+    "M-TS": {"fill": "FEF08A", "font": "713F12"}, # Amarillo Mañana Telesalud
+    "T-TU": {"fill": "BBF7D0", "font": "14532D"}, # Verde Tarde Urgencias
+    "T-CE": {"fill": "BBF7D0", "font": "14532D"}, # Verde Tarde Consultorio
+    "DES":  {"fill": "EDE9FE", "font": "5B21B6"}, # Violeta descanso post-12h
+    "LIBRE": {"fill": "F5F3FF", "font": "6B21A8"} # Violeta día libre
 }
 
 def generate_excel_schedule(year: int, month: int, ipress_name: str = "IPRESS SALUD PERÚ") -> io.BytesIO:
@@ -166,7 +166,7 @@ def generate_excel_schedule(year: int, month: int, ipress_name: str = "IPRESS SA
             day_info = month_info["days"][d - 1]
             shift_info = doc["days"].get(d)
 
-            if shift_info:
+            if shift_info and shift_info.get("shift_period") != "LIBRE":
                 sp = shift_info["shift_period"]
                 srv = shift_info["service"]
                 
@@ -181,14 +181,14 @@ def generate_excel_schedule(year: int, month: int, ipress_name: str = "IPRESS SA
                 elif sp in ("M", "T"):
                     label = f"{sp}-{srv}"
                     cell.value = label
-                    color_cfg = SHIFT_COLORS.get(label, {"fill": "FFFFFF", "font": "000000"})
+                    color_cfg = SHIFT_COLORS.get(label, SHIFT_COLORS.get("M-TU" if sp=="M" else "T-TU"))
                     cell.fill = PatternFill(start_color=color_cfg["fill"], end_color=color_cfg["fill"], fill_type="solid")
                     cell.font = Font(size=9, bold=True, color=color_cfg["font"])
             else:
-                if day_info["is_sunday"]:
-                    cell.fill = PatternFill(start_color=COLOR_WEEKEND_SUN, end_color=COLOR_WEEKEND_SUN, fill_type="solid")
-                elif day_info["is_saturday"]:
-                    cell.fill = PatternFill(start_color=COLOR_WEEKEND_SAT, end_color=COLOR_WEEKEND_SAT, fill_type="solid")
+                # Día libre (sin turno programado o marcado como LIBRE) - violeta con etiqueta 'Libre'
+                cell.value = "Libre"
+                cell.fill = PatternFill(start_color=SHIFT_COLORS["LIBRE"]["fill"], end_color=SHIFT_COLORS["LIBRE"]["fill"], fill_type="solid")
+                cell.font = Font(size=8, color=SHIFT_COLORS["LIBRE"]["font"])
 
         # Celdas de resumen por médico
         c_6h = ws.cell(row=current_row, column=col_summary_start, value=doc["count_6h"])
@@ -262,8 +262,9 @@ def generate_excel_schedule(year: int, month: int, ipress_name: str = "IPRESS SA
         ("M-TS", "Mañana - Telesalud/TBC/MCI", SHIFT_COLORS["M-TS"]["fill"]),
         ("T-TU", "Tarde - Tópico Urgencias", SHIFT_COLORS["T-TU"]["fill"]),
         ("T-CE", "Tarde - Consultorio de Medicina", SHIFT_COLORS["T-CE"]["fill"]),
-        ("12h", "Turno 12h (Mañana + Tarde)", SHIFT_COLORS["12h"]["fill"]),
-        ("DES", "Descanso de Guardia post-12h", SHIFT_COLORS["DES"]["fill"]),
+        ("12h", "Turno 12h (Celeste - Mañana+Tarde)", SHIFT_COLORS["12h"]["fill"]),
+        ("DES", "Descanso post-12h (Violeta)", SHIFT_COLORS["DES"]["fill"]),
+        ("Libre", "Día Libre (Violeta)", SHIFT_COLORS["LIBRE"]["fill"]),
     ]
     leg_col = 4
     for code, desc, fill_hex in legends:

@@ -71,48 +71,71 @@
     border: 1px solid transparent;
 }
 
+/* 1. Turnos de 12 Horas: Celeste */
 .shift-12h {
-    background-color: #fef3c7;
-    color: #92400e;
-    border-color: #fcd34d;
-    box-shadow: 0 1px 2px rgba(245, 158, 11, 0.15);
+    background-color: #bae6fd;
+    color: #0369a1;
+    border-color: #7dd3fc;
+    box-shadow: 0 1px 2px rgba(14, 165, 233, 0.20);
+}
+
+/* 2. Turnos de Mañana: Amarillo */
+.shift-M,
+.shift-M-TU,
+.shift-M-CE,
+.shift-M-TS {
+    background-color: #fef08a;
+    color: #713f12;
+    border-color: #facc15;
+    box-shadow: 0 1px 2px rgba(202, 138, 4, 0.15);
 }
 
 .shift-M-TU {
-    background-color: #ffedd5;
-    color: #9a3412;
-    border-color: #fdba74;
+    border-color: #eab308;
 }
 
 .shift-M-CE {
-    background-color: #dbeafe;
-    color: #1e40af;
-    border-color: #93c5fd;
+    border-color: #facc15;
 }
 
 .shift-M-TS {
-    background-color: #d1fae5;
-    color: #065f46;
-    border-color: #6ee7b7;
+    border-color: #ca8a04;
+}
+
+/* 3. Turnos de Tarde: Verde */
+.shift-T,
+.shift-T-TU,
+.shift-T-CE {
+    background-color: #bbf7d0;
+    color: #14532d;
+    border-color: #86efac;
+    box-shadow: 0 1px 2px rgba(34, 197, 94, 0.15);
 }
 
 .shift-T-TU {
-    background-color: #fed7aa;
-    color: #7c2d12;
-    border-color: #fb923c;
+    border-color: #4ade80;
 }
 
 .shift-T-CE {
-    background-color: #cffafe;
-    color: #155e75;
-    border-color: #67e8f9;
+    border-color: #22c55e;
 }
 
+/* 4. Descansos: Violeta */
 .shift-DES {
-    background-color: #f3e8ff;
-    color: #6b21a8;
-    border-color: #d8b4fe;
+    background-color: #ede9fe;
+    color: #5b21b6;
+    border-color: #c4b5fd;
     font-style: italic;
+    box-shadow: 0 1px 2px rgba(147, 51, 234, 0.15);
+}
+
+/* 5. Libres: Violeta con etiqueta Libre */
+.shift-LIBRE,
+.shift-libre {
+    background-color: #f5f3ff;
+    color: #6b21a8;
+    border-color: #ddd6fe;
+    font-weight: 600;
 }
 
 .shift-empty {
