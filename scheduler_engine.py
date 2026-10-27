@@ -373,18 +373,14 @@ def record_doctor_shift(
                     updated_at = CURRENT_TIMESTAMP
             """, (year, month, day, shift_period, service, doctor_id))
 
-            # Regla obligatoria: Siempre habrá un día de descanso (DES) al día siguiente de un turno de 12 horas
+            # Regla obligatoria: Asignar descanso (DES) al día siguiente de un turno de 12 horas
+            # SOLO si el día siguiente aún no tiene un turno asistencial programado (no sobrescribir turnos existentes)
             if shift_period == "12h" and (day + 1) <= num_days:
                 next_day_info = month_info["days"][day]  # índice day corresponde al día day+1
                 if not next_day_info["is_sunday"]:
                     conn.execute("""
-                        INSERT INTO shifts (year, month, day, shift_period, service, doctor_id, is_proposal, updated_at)
+                        INSERT OR IGNORE INTO shifts (year, month, day, shift_period, service, doctor_id, is_proposal, updated_at)
                         VALUES (?, ?, ?, 'DES', 'DES', ?, 1, CURRENT_TIMESTAMP)
-                        ON CONFLICT(year, month, day, doctor_id) DO UPDATE SET
-                            shift_period = 'DES',
-                            service = 'DES',
-                            is_proposal = 1,
-                            updated_at = CURRENT_TIMESTAMP
                     """, (year, month, day + 1, doctor_id))
 
             log_audit(
@@ -699,11 +695,11 @@ def auto_assign_missing_shifts_day10(year: int, month: int):
         sanchez_id = next((d["id"] for d in doctors if "Sanchez" in d["name"]), None)
         chunga_id = next((d["id"] for d in doctors if "Chunga" in d["name"]), None)
 
-        # 0. CARGAR PROPUESTAS EXISTENTES (is_proposal = 1) PARA RESPETARLAS AL 100%
+        # 0. CARGAR TURNOS Y PROPUESTAS EXISTENTES PARA RESPETARLOS AL 100%
         existing_shifts = conn.execute("""
             SELECT day, shift_period, service, doctor_id, is_proposal
             FROM shifts
-            WHERE year = ? AND month = ? AND is_proposal = 1
+            WHERE year = ? AND month = ?
         """, (year, month)).fetchall()
 
         grid = {d: {} for d in range(1, num_days + 1)}
