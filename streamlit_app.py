@@ -5,6 +5,7 @@ Compatible 100% con Streamlit Community Cloud (share.streamlit.io).
 """
 
 import io
+import os
 from datetime import datetime
 import pandas as pd
 import streamlit as st
@@ -29,6 +30,9 @@ from scheduler_engine import (
     approve_day_discrepancy,
     approve_all_day_discrepancies,
     revoke_day_approval,
+    get_month_appointment_locks,
+    check_shift_modification_allowed,
+    sync_appointment_locks_from_citas_db,
     SERVICE_LABELS
 )
 from exporter import (
@@ -262,6 +266,7 @@ days = month_info["days"]
 quota_summary = get_doctor_quota_summary(selected_year, selected_month)
 doc_summary = quota_summary["doctors_summary"]
 coverage = get_daily_coverage(selected_year, selected_month)
+appointment_locks = get_month_appointment_locks(selected_year, selected_month)
 
 sync_discrepancies_db(selected_year, selected_month)
 with get_connection() as conn:
@@ -340,6 +345,19 @@ def open_shift_recording_modal(default_day: int = None, default_doc_id: int = No
     else:
         st.info(f"📌 Actualmente **{target_doc['name']}** figura como **Libre** el Día {edit_day:02d}.")
 
+    cell_lock = appointment_locks.get((target_id, edit_day))
+    if cell_lock and cell_lock.get("total_appointments", 0) > 0:
+        locked_parts = []
+        if cell_lock.get("M"):
+            locked_parts.append(f"**Turno Mañana (CE)**: {cell_lock['M']['appointments_count']} paciente(s) citado(s)")
+        if cell_lock.get("T"):
+            locked_parts.append(f"**Turno Tarde (CE)**: {cell_lock['T']['appointments_count']} paciente(s) citado(s)")
+        st.error(
+            f"🔒 **TURNO BLOQUEADO POR CITAS DE PACIENTES (`citascsjp2`):** "
+            f"Este médico ya cuenta con citas agendadas el Día {edit_day:02d}/{selected_month:02d}/{selected_year} "
+            f"({', '.join(locked_parts)}). Por seguridad asistencial, **no se permite modificar ni eliminar el turno de Consultorio (CE) donde ya existen pacientes citados**."
+        )
+
     col_p, col_s = st.columns([1.2, 1.8])
     with col_p:
         period_choice = st.radio(
@@ -407,9 +425,21 @@ def open_shift_recording_modal(default_day: int = None, default_doc_id: int = No
             srv_val = ""
 
     st.markdown("---")
+    allowed_mod_preview, lock_msg_preview = check_shift_modification_allowed(
+        year=selected_year,
+        month=selected_month,
+        day=edit_day,
+        doctor_id=target_id,
+        new_shift_period=sp_val,
+        new_service=srv_val
+    )
+    if not allowed_mod_preview:
+        st.error(lock_msg_preview)
+
     confirm_mod = st.checkbox(
         f"✅ Confirmo que deseo modificar el horario de {target_doc['name']} en la fecha Día {edit_day:02d}/{selected_month:02d}/{selected_year}.",
         value=False,
+        disabled=not allowed_mod_preview,
         key="dlg_confirm_chk"
     )
 
@@ -418,7 +448,7 @@ def open_shift_recording_modal(default_day: int = None, default_doc_id: int = No
         if st.button("Cancelar", use_container_width=True):
             st.rerun()
     with b_save:
-        if st.button("💾 Confirmar y Grabar Cambio", type="primary", use_container_width=True, disabled=not confirm_mod):
+        if st.button("💾 Confirmar y Grabar Cambio", type="primary", use_container_width=True, disabled=(not confirm_mod or not allowed_mod_preview)):
             res = record_doctor_shift(
                 year=selected_year,
                 month=selected_month,
@@ -708,25 +738,34 @@ for doc in doctors_only:
     for d in days:
         cell_cls = "col-sun" if d["is_sunday"] else ("col-hol" if d["is_holiday"] else ("col-sat" if d["is_saturday"] else ""))
         shift = d_sum["days"].get(d["day"])
-        
+        cell_locks = appointment_locks.get((doc["id"], d["day"]), {})
+        m_cnt = cell_locks.get("M", {}).get("appointments_count", 0)
+        t_cnt = cell_locks.get("T", {}).get("appointments_count", 0)
+        tot_citas = m_cnt + t_cnt
+        lock_badge = f"<br><span style='font-size:8.5px; color:#991b1b; font-weight:800;'>🔒{tot_citas} cita(s)</span>" if tot_citas > 0 else ""
+
         if shift and shift.get("shift_period") != "LIBRE":
             sp = shift["shift_period"]
             srv = shift["service"]
             if sp == "12h":
-                b_html = f"<span class='badge-shift badge-12h'>12h<br><small>{srv}</small></span>"
+                b_html = f"<span class='badge-shift badge-12h'>12h<br><small>{srv}</small>{lock_badge}</span>"
             elif sp == "DES":
                 b_html = "<span class='badge-shift badge-DES'>DES</span>"
             else:
                 tag = f"{sp}-{srv}"
                 b_cls = f"badge-{tag}" if f"badge-{tag}" in ("badge-M-TU", "badge-M-CE", "badge-M-TS", "badge-T-TU", "badge-T-CE") else "badge-12h"
-                b_html = f"<span class='badge-shift {b_cls}'>{tag}</span>"
+                b_html = f"<span class='badge-shift {b_cls}'>{tag}{lock_badge}</span>"
         else:
-            b_html = "<span class='badge-shift badge-LIBRE'>Libre</span>"
+            b_html = f"<span class='badge-shift badge-LIBRE'>Libre{lock_badge}</span>"
 
+        lock_tooltip = (
+            f" | 🔒 BLOQUEADO POR CITAS EN CE (Mañana: {m_cnt}, Tarde: {t_cnt})"
+            if tot_citas > 0 else ""
+        )
         click_attr = (
             f"data-clickable='1' data-day='{d['day']}' data-doc-id='{doc['id']}' "
-            f"title='Clic para modificar turno de {doc['name']} el Día {d['day']}'"
-        ) if is_admin_or_rrhh else ""
+            f"title='Clic para ver/modificar turno de {doc['name']} el Día {d['day']}{lock_tooltip}'"
+        ) if is_admin_or_rrhh else f"title='Día {d['day']}: {doc['name']}{lock_tooltip}'"
         html.append(f"<td class='{cell_cls}' {click_attr}>{b_html}</td>")
 
     # Totales
@@ -963,7 +1002,11 @@ if is_admin_or_rrhh:
     role_header = "Jefatura Médica" if curr_u_role == "admin" else "Responsable de Recursos Humanos"
     st.subheader(f"👑 Panel de Control Institucional ({role_header})")
 
-    adm_tab1, adm_tab2 = st.tabs(["🛡️ Auditoría en Vivo", "👥 Gestión de Personal y Contraseñas"])
+    adm_tab1, adm_tab2, adm_tab3 = st.tabs([
+        "🛡️ Auditoría en Vivo",
+        "👥 Gestión de Personal y Contraseñas",
+        "🔗 Sincronización con Citas de Pacientes (citascsjp2)"
+    ])
 
     with adm_tab1:
         st.markdown("##### Registro de Auditoría Reciente (`audit_logs`)")
@@ -1020,5 +1063,50 @@ if is_admin_or_rrhh:
                             conn=conn
                         )
                     st.success(f"¡Clave de {target_d['name']} restablecida exitosamente a: {rst_pin}!")
+
+    with adm_tab3:
+        st.markdown("##### 🔗 Vinculación de Bloqueo por Citas Médicas (`https://citascsjp2.streamlit.app/`)")
+        st.info(
+            "**Regla de Protección de Pacientes Citados:** Cuando un paciente saca una cita en el portal de citas "
+            "(`citascsjp2.streamlit.app`), el turno de **Consultorio de Medicina (`CE`)** de ese médico en esa fecha y turno (`M` o `T`) "
+            "queda **bloqueado automáticamente (`🔒`)** para que no pueda ser eliminado ni cambiado de servicio en este horario."
+        )
+        locks_rows = []
+        for (ldoc_id, lday), pmap in sorted(appointment_locks.items(), key=lambda x: (x[0][1], x[0][0])):
+            dname = next((d["name"] for d in doctors_list if d["id"] == ldoc_id), f"ID {ldoc_id}")
+            for sp_k, linfo in pmap.items():
+                locks_rows.append({
+                    "Día": f"{lday:02d}/{selected_month:02d}/{selected_year}",
+                    "Turno Protegido": "Mañana (M-CE)" if sp_k == "M" else "Tarde (T-CE)",
+                    "Médico Titular": dname,
+                    "Citas Activas": linfo["appointments_count"],
+                    "Tickets de Referencia": linfo.get("sample_tickets", "")
+                })
+        if locks_rows:
+            st.dataframe(pd.DataFrame(locks_rows), use_container_width=True, hide_index=True)
+        else:
+            st.caption("No se registran turnos bloqueados por citas de pacientes en el mes seleccionado.")
+
+        up_citas_db = st.file_uploader(
+            "Subir base de datos de citas (`citas_jp2_v2.db`) para sincronizar bloqueos manualmente:",
+            type=["db", "sqlite", "sqlite3"],
+            key="up_citas_db_sync"
+        )
+        if up_citas_db is not None:
+            if st.button("🔄 Sincronizar Bloqueos desde citas_jp2_v2.db", type="primary"):
+                import tempfile
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".db") as tmp_c:
+                    tmp_c.write(up_citas_db.getvalue())
+                    tmp_c_path = tmp_c.name
+                sync_res = sync_appointment_locks_from_citas_db(source_citas_db_path=tmp_c_path)
+                try:
+                    os.remove(tmp_c_path)
+                except OSError:
+                    pass
+                if sync_res["synced"]:
+                    st.success(f"¡Bloqueos sincronizados con éxito! ({sync_res['locks_count']} turno(s) con citas activas bloqueados).")
+                    st.rerun()
+                else:
+                    st.error(sync_res["message"])
 
 st.caption("IPRESS Salud Perú © 2026 - Sistema de Programación Asistencial Oficial.")

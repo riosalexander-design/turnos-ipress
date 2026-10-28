@@ -11,7 +11,12 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 from holidays_pe import get_month_info
 from database import get_connection, log_audit
-from scheduler_engine import get_doctor_quota_summary, get_daily_coverage, sync_discrepancies_db
+from scheduler_engine import (
+    get_doctor_quota_summary,
+    get_daily_coverage,
+    sync_discrepancies_db,
+    check_shift_modification_allowed
+)
 
 # Paleta de colores asistenciales
 COLOR_HEADER_BG = "1F4E79"        # Azul institucional oscuro
@@ -660,6 +665,21 @@ def parse_and_import_doctor_proposal(
     # Cerrar el workbook y descartar el buffer de memoria explícitamente
     wb.close()
     stream.close()
+
+    # Verificar que la propuesta no modifique ni elimine ningún turno de Consultorio (CE)
+    # donde este médico ya tenga pacientes citados en el aplicativo de citas
+    for d_num in range(1, num_days + 1):
+        sp_new, srv_new = parsed_shifts.get(d_num, ("LIBRE", "LIBRE"))
+        allowed_mod, lock_err = check_shift_modification_allowed(
+            year=expected_year,
+            month=expected_month,
+            day=d_num,
+            doctor_id=doctor["id"],
+            new_shift_period="" if sp_new == "LIBRE" else sp_new,
+            new_service="" if sp_new == "LIBRE" else srv_new
+        )
+        if not allowed_mod:
+            return {"success": False, "error": lock_err, "status_code": 409}
 
     # Guardar propuesta en la base de datos para este único médico
     saved_count = 0

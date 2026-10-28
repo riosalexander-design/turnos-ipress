@@ -7,8 +7,10 @@ detector de discrepancias, generador de alternativas y validador de 'Horario Apr
 import json
 import hashlib
 from datetime import datetime, timedelta, date
+import os
+import sqlite3
 from holidays_pe import get_month_info
-from database import get_connection, log_audit
+from database import get_connection, log_audit, find_external_citas_db
 
 SERVICES_MORNING = ["TU", "CE", "TS"]  # Tópico de Urgencias, Consultorio de Medicina, Telesalud/TBC/MCI
 SERVICES_AFTERNOON = ["TU", "CE"]      # Tópico de Urgencias, Consultorio de Medicina
@@ -18,6 +20,227 @@ SERVICE_LABELS = {
     "CE": "Consultorio de Medicina (CE)",
     "TS": "Telesalud/TBC/MCI (TS)"
 }
+
+def sync_appointment_locks_from_citas_db(citas_db_path: str = None, source_citas_db_path: str = None, replace_all: bool = False) -> dict:
+    """
+    Sincroniza las citas activas (status IN ('reservada', 'atendida', 'no_asistio'))
+    desde la base de datos del proyecto de citas (citas_jp2_v2.db) hacia la tabla
+    'shift_appointment_locks' de ipress_turnos.db.
+    """
+    target_path = source_citas_db_path or citas_db_path or find_external_citas_db()
+    if not target_path or not os.path.exists(target_path):
+        return {"synced": False, "locks_count": 0, "source": target_path, "message": "No se encontró el archivo citas_jp2_v2.db."}
+
+    try:
+        ext_conn = sqlite3.connect(target_path, timeout=15.0)
+        ext_conn.row_factory = sqlite3.Row
+        app_rows = ext_conn.execute("""
+            SELECT year, month, day, shift_period, doctor_cmp,
+                   COUNT(*) as cnt,
+                   GROUP_CONCAT(ticket_code, ', ') as tickets
+            FROM appointments
+            WHERE status != 'cancelada'
+            GROUP BY year, month, day, shift_period, doctor_cmp
+        """).fetchall()
+        ext_conn.close()
+    except Exception as exc:
+        return {"synced": False, "locks_count": 0, "error": str(exc), "message": f"Error al leer citas_jp2_v2.db: {exc}"}
+
+    synced_locks = 0
+    with get_connection() as conn:
+        docs = conn.execute("SELECT id, cmp FROM doctors").fetchall()
+        cmp_to_id = {str(r["cmp"]).strip(): r["id"] for r in docs}
+
+        if replace_all or source_citas_db_path is not None:
+            conn.execute("DELETE FROM shift_appointment_locks")
+
+        for r in app_rows:
+            cmp_str = str(r["doctor_cmp"]).strip()
+            doc_id = cmp_to_id.get(cmp_str)
+            if doc_id and int(r["cnt"]) > 0:
+                conn.execute("""
+                    INSERT INTO shift_appointment_locks
+                    (year, month, day, shift_period, doctor_id, doctor_cmp, appointments_count, sample_tickets, synced_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(year, month, day, shift_period, doctor_id) DO UPDATE SET
+                        appointments_count = excluded.appointments_count,
+                        sample_tickets = excluded.sample_tickets,
+                        synced_at = CURRENT_TIMESTAMP
+                """, (
+                    int(r["year"]),
+                    int(r["month"]),
+                    int(r["day"]),
+                    str(r["shift_period"]).strip(),
+                    doc_id,
+                    cmp_str,
+                    int(r["cnt"]),
+                    str(r["tickets"] or "")
+                ))
+                synced_locks += 1
+        conn.commit()
+
+    return {"synced": True, "locks_count": synced_locks, "source": target_path, "message": f"Sincronizados {synced_locks} bloqueos de citas."}
+
+
+def register_shift_appointment_lock(
+    year: int,
+    month: int,
+    day: int,
+    shift_period: str,
+    doctor_cmp: str = None,
+    doctor_id: int = None,
+    appointments_count: int = 1,
+    ticket_code: str = ""
+) -> dict:
+    """
+    Registra o actualiza directamente un bloqueo por cita de paciente en ipress_turnos.db.
+    Si appointments_count <= 0, libera el bloqueo de ese turno.
+    """
+    with get_connection() as conn:
+        if doctor_id:
+            doc = conn.execute("SELECT id, name, cmp FROM doctors WHERE id = ?", (doctor_id,)).fetchone()
+        else:
+            doc = conn.execute("SELECT id, name, cmp FROM doctors WHERE cmp = ?", (str(doctor_cmp).strip(),)).fetchone()
+
+        if not doc:
+            return {"success": False, "error": "Médico no encontrado en el padrón de horarios."}
+
+        sp = str(shift_period).strip().upper()
+        if sp not in ("M", "T"):
+            return {"success": False, "error": "El período de cita debe ser 'M' (Mañana) o 'T' (Tarde)."}
+
+        if int(appointments_count) <= 0:
+            conn.execute("""
+                DELETE FROM shift_appointment_locks
+                WHERE year = ? AND month = ? AND day = ? AND shift_period = ? AND doctor_id = ?
+            """, (year, month, day, sp, doc["id"]))
+            conn.commit()
+            return {"success": True, "locked": False, "message": "Bloqueo liberado (0 citas activas)."}
+
+        conn.execute("""
+            INSERT INTO shift_appointment_locks
+            (year, month, day, shift_period, doctor_id, doctor_cmp, appointments_count, sample_tickets, synced_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(year, month, day, shift_period, doctor_id) DO UPDATE SET
+                appointments_count = excluded.appointments_count,
+                sample_tickets = CASE
+                    WHEN excluded.sample_tickets != '' THEN excluded.sample_tickets
+                    ELSE shift_appointment_locks.sample_tickets
+                END,
+                synced_at = CURRENT_TIMESTAMP
+        """, (year, month, day, sp, doc["id"], doc["cmp"], int(appointments_count), ticket_code or ""))
+        conn.commit()
+
+        return {
+            "success": True,
+            "locked": True,
+            "doctor_id": doc["id"],
+            "doctor_name": doc["name"],
+            "year": year,
+            "month": month,
+            "day": day,
+            "shift_period": sp,
+            "appointments_count": int(appointments_count)
+        }
+
+
+def get_month_appointment_locks(year: int, month: int) -> dict:
+    """
+    Retorna un diccionario {(doctor_id, day): {'M': info, 'T': info, 'total_appointments': N}}
+    con todos los turnos bloqueados por citas de pacientes en el mes indicado.
+    Sincroniza primero automáticamente con citas_jp2_v2.db si está disponible localmente.
+    """
+    sync_appointment_locks_from_citas_db()
+    locks_map = {}
+    with get_connection() as conn:
+        rows = conn.execute("""
+            SELECT year, month, day, shift_period, doctor_id, doctor_cmp, appointments_count, sample_tickets
+            FROM shift_appointment_locks
+            WHERE year = ? AND month = ? AND appointments_count > 0
+        """, (year, month)).fetchall()
+
+        for r in rows:
+            key = (r["doctor_id"], r["day"])
+            entry = locks_map.setdefault(key, {"M": None, "T": None, "total_appointments": 0, "locked_periods": []})
+            sp = r["shift_period"]
+            entry[sp] = {
+                "shift_period": sp,
+                "appointments_count": r["appointments_count"],
+                "sample_tickets": r["sample_tickets"]
+            }
+            entry["total_appointments"] += r["appointments_count"]
+            if sp not in entry["locked_periods"]:
+                entry["locked_periods"].append(sp)
+
+    return locks_map
+
+
+def check_shift_modification_allowed(
+    year: int,
+    month: int,
+    day: int,
+    doctor_id: int,
+    new_shift_period: str,
+    new_service: str
+) -> tuple[bool, str]:
+    """
+    Verifica si un cambio de horario para (doctor_id, year, month, day) hacia (new_shift_period, new_service)
+    afecta un turno de Consultorio de Medicina ('CE') que ya tiene citas reservadas por pacientes.
+    - Si el médico tiene citas en Mañana ('M'), el nuevo turno DEBE mantener 'CE' en la Mañana
+      (es decir, ser 'M' con 'CE' o '12h' que empiece con 'CE+').
+    - Si el médico tiene citas en Tarde ('T'), el nuevo turno DEBE mantener 'CE' en la Tarde
+      (es decir, ser 'T' con 'CE' o '12h' que termine con '+CE').
+    Retorna (True, "") si está permitido, o (False, mensaje_de_bloqueo) si está bloqueado por citas.
+    """
+    locks_map = get_month_appointment_locks(year, month)
+    lock_info = locks_map.get((int(doctor_id), int(day)))
+    if not lock_info or lock_info["total_appointments"] <= 0:
+        return True, ""
+
+    sp_norm = (new_shift_period or "CLEAR").strip()
+    srv_norm = (new_service or "").strip().upper()
+
+    # Determinar si el nuevo turno preserva CE en Mañana y/o en Tarde
+    keeps_m_ce = False
+    keeps_t_ce = False
+    if sp_norm == "M" and srv_norm == "CE":
+        keeps_m_ce = True
+    elif sp_norm == "T" and srv_norm == "CE":
+        keeps_t_ce = True
+    elif sp_norm == "12h":
+        parts = srv_norm.split("+") if "+" in srv_norm else [srv_norm, srv_norm]
+        if parts[0] == "CE":
+            keeps_m_ce = True
+        if len(parts) > 1 and parts[1] == "CE":
+            keeps_t_ce = True
+
+    with get_connection() as conn:
+        doc = conn.execute("SELECT name, cmp FROM doctors WHERE id = ?", (doctor_id,)).fetchone()
+        doc_name = doc["name"] if doc else f"Médico ID {doctor_id}"
+
+    if lock_info.get("M") and not keeps_m_ce:
+        cnt_m = lock_info["M"]["appointments_count"]
+        tks_m = lock_info["M"].get("sample_tickets") or ""
+        tk_txt = f" (Tickets: {tks_m})" if tks_m else ""
+        return (
+            False,
+            f"🔒 TURNO BLOQUEADO POR CITAS AGENDADAS: No se puede modificar ni eliminar el Consultorio de Medicina (CE) "
+            f"del Turno Mañana del Día {day:02d}/{month:02d}/{year} para {doc_name} porque ya tiene {cnt_m} paciente(s) citado(s) "
+            f"en el aplicativo de citas{tk_txt}."
+        )
+
+    if lock_info.get("T") and not keeps_t_ce:
+        cnt_t = lock_info["T"]["appointments_count"]
+        tks_t = lock_info["T"].get("sample_tickets") or ""
+        tk_txt = f" (Tickets: {tks_t})" if tks_t else ""
+        return (
+            False,
+            f"🔒 TURNO BLOQUEADO POR CITAS AGENDADAS: No se puede modificar ni eliminar el Consultorio de Medicina (CE) "
+            f"del Turno Tarde del Día {day:02d}/{month:02d}/{year} para {doc_name} porque ya tiene {cnt_t} paciente(s) citado(s) "
+            f"en el aplicativo de citas{tk_txt}."
+        )
+
+    return True, ""
 
 def calculate_deadline(current_dt: datetime, year: int, month: int) -> tuple[datetime, str]:
     """
@@ -337,6 +560,19 @@ def record_doctor_shift(
     if day < 1 or day > num_days:
         return {"success": False, "error": "Día inválido para el mes seleccionado.", "status_code": 400}
 
+    # Regla de bloqueo por citas de pacientes (citascsjp2.streamlit.app):
+    # Si el turno de Consultorio de Medicina (CE) ya tiene citas reservadas, no se puede modificar ni borrar.
+    allowed_mod, lock_err = check_shift_modification_allowed(
+        year=year,
+        month=month,
+        day=day,
+        doctor_id=doctor_id,
+        new_shift_period=shift_period,
+        new_service=service
+    )
+    if not allowed_mod:
+        return {"success": False, "error": lock_err, "status_code": 409}
+
     with get_connection() as conn:
         doc = conn.execute("SELECT name FROM doctors WHERE id = ?", (doctor_id,)).fetchone()
         doc_name = doc["name"] if doc else f"Médico ID {doctor_id}"
@@ -601,6 +837,17 @@ def apply_discrepancy_alternative(discrepancy_id: int) -> bool:
                     updated_service = f"{m_part}+{t_part}"
                 else:
                     updated_service = new_service
+
+                allowed_mod, _ = check_shift_modification_allowed(
+                    year=disc["year"],
+                    month=disc["month"],
+                    day=day,
+                    doctor_id=target_doc_id,
+                    new_shift_period=cur_shift["shift_period"],
+                    new_service=updated_service
+                )
+                if not allowed_mod:
+                    return False
 
                 conn.execute("""
                     UPDATE shifts

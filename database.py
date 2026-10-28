@@ -13,6 +13,20 @@ from datetime import datetime
 
 DB_FILE = os.path.join(os.path.dirname(__file__), "ipress_turnos.db")
 
+# Rutas candidatas a la base de datos del proyecto vinculado de Citas para Pacientes (citascsjp2)
+EXTERNAL_CITAS_DB_CANDIDATES = [
+    r"C:\Users\Alexander\OneDrive - EduCorpPERU (1)\2026\2026-2\citas-ipress-jp2\citas_jp2_v2.db",
+    os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "citas-ipress-jp2", "citas_jp2_v2.db")),
+]
+
+
+def find_external_citas_db() -> str | None:
+    """Retorna la ruta de citas_jp2_v2.db si está disponible localmente."""
+    for path in EXTERNAL_CITAS_DB_CANDIDATES:
+        if os.path.exists(path):
+            return path
+    return None
+
 
 class ClosingConnection(sqlite3.Connection):
     """
@@ -199,6 +213,23 @@ def _init_db_tables_and_users():
                 approved_at TEXT NOT NULL,
                 notes TEXT,
                 PRIMARY KEY(year, month, day)
+            )
+        """)
+
+        # Tabla de Bloqueos de Turnos por Citas de Pacientes (Sincronizada con citascsjp2.streamlit.app)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS shift_appointment_locks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                year INTEGER NOT NULL,
+                month INTEGER NOT NULL,
+                day INTEGER NOT NULL,
+                shift_period TEXT NOT NULL, -- 'M' o 'T'
+                doctor_id INTEGER NOT NULL REFERENCES doctors(id),
+                doctor_cmp TEXT NOT NULL,
+                appointments_count INTEGER DEFAULT 1,
+                sample_tickets TEXT,
+                synced_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(year, month, day, shift_period, doctor_id)
             )
         """)
 

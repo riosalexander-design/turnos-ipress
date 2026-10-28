@@ -410,6 +410,67 @@ class TestIPRESSScheduling(unittest.TestCase):
 
         print("[OK] Test 11: Auto-recuperación de SQLite ante archivos WAL/SHM huérfanos y preservación de claves verificadas.")
 
+    def test_12_appointment_locks_prevent_shift_modification(self):
+        """Verifica que cuando un paciente saca una cita en el proyecto de citas, ese turno CE ya no pueda modificarse ni eliminarse en el horario."""
+        from scheduler_engine import register_shift_appointment_lock
+        from openpyxl import load_workbook
+        import io
+
+        year, month, day = 2026, 10, 12
+        doc_id = 1  # Dra. Caldas Pacsi (CMP 71201)
+
+        # 1. Jefatura programa a Dra. Caldas en M-CE el día 12/10/2026
+        res_init = record_doctor_shift(year, month, day, doc_id, "M", "CE", user_id=6, user_name="Jefatura Médica IPRESS", user_role="admin")
+        self.assertTrue(res_init["success"])
+
+        # 2. Se registra una cita de paciente en el aplicativo de citas para ese turno Mañana (M)
+        lock_res = register_shift_appointment_lock(
+            year=year,
+            month=month,
+            day=day,
+            shift_period="M",
+            doctor_cmp="71201",
+            appointments_count=1,
+            ticket_code="JP2-20261012-M01"
+        )
+        self.assertTrue(lock_res["success"])
+
+        # 3a. Jefatura intenta cambiar ese turno M-CE a M-TU -> BLOQUEADO (HTTP 409)
+        res_mod = record_doctor_shift(year, month, day, doc_id, "M", "TU", user_id=6, user_name="Jefatura Médica IPRESS", user_role="admin")
+        self.assertFalse(res_mod["success"])
+        self.assertEqual(res_mod["status_code"], 409)
+        self.assertIn("TURNO BLOQUEADO POR CITAS AGENDADAS", res_mod["error"])
+
+        # 3b. RRHH intenta eliminar/dejar Libre ese turno -> BLOQUEADO (HTTP 409)
+        res_del = record_doctor_shift(year, month, day, doc_id, "DELETE", "", user_id=7, user_name="Responsable de Recursos Humanos", user_role="rrhh")
+        self.assertFalse(res_del["success"])
+        self.assertEqual(res_del["status_code"], 409)
+
+        # 3c. La propia Dra. Caldas intenta subir una propuesta Excel cambiando el día 12 a M-TS -> BLOQUEADO (HTTP 409)
+        with get_connection() as conn:
+            doc1 = dict(conn.execute("SELECT id, name, condition, cmp, role FROM doctors WHERE id = ?", (doc_id,)).fetchone())
+        tpl_stream = generate_blank_proposal_template(year, month, doc1)
+        wb = load_workbook(tpl_stream)
+        ws = wb.active
+        ws.cell(row=10 + day, column=4, value="M-TS")
+        buf = io.BytesIO()
+        wb.save(buf)
+        res_prop_locked = parse_and_import_doctor_proposal(buf.getvalue(), year, month, expected_doctor_id=doc_id)
+        self.assertFalse(res_prop_locked["success"])
+        self.assertEqual(res_prop_locked["status_code"], 409)
+        self.assertIn("TURNO BLOQUEADO POR CITAS AGENDADAS", res_prop_locked["error"])
+
+        # 4. Sin embargo, si Jefatura amplía de M-CE a 12h (CE+TU), donde la Mañana sigue siendo CE, SÍ se permite
+        res_12h_keep_ce = record_doctor_shift(year, month, day, doc_id, "12h", "CE+TU", user_id=6, user_name="Jefatura Médica IPRESS", user_role="admin")
+        self.assertTrue(res_12h_keep_ce["success"])
+
+        # 5. Si la cita se cancela en el sistema de citas (appointments_count = 0), el turno se desbloquea y ya puede modificarse
+        register_shift_appointment_lock(year=year, month=month, day=day, shift_period="M", doctor_cmp="71201", appointments_count=0)
+        res_unlocked = record_doctor_shift(year, month, day, doc_id, "M", "TU", user_id=6, user_name="Jefatura Médica IPRESS", user_role="admin")
+        self.assertTrue(res_unlocked["success"])
+
+        print("[OK] Test 12: Bloqueo automatico de modificacion/eliminacion de turnos con citas reservadas verificado.")
+
     @classmethod
     def tearDownClass(cls):
         """Limpia la base de datos temporal de pruebas."""

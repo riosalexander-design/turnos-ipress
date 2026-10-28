@@ -465,6 +465,13 @@ function renderMatrix() {
             else if (d.is_holiday) td.classList.add("col-holiday");
 
             const shift = docSummary.days[d.day];
+            const locksMap = (state.scheduleData && state.scheduleData.appointment_locks) ? state.scheduleData.appointment_locks : {};
+            const cellLock = locksMap[`${doc.id}_${d.day}`] || {};
+            const mCnt = (cellLock.M && cellLock.M.appointments_count) ? cellLock.M.appointments_count : 0;
+            const tCnt = (cellLock.T && cellLock.T.appointments_count) ? cellLock.T.appointments_count : 0;
+            const totCitas = mCnt + tCnt;
+            const lockHtml = totCitas > 0 ? `<span class="text-[8px] text-rose-800 font-extrabold">🔒${totCitas} cita(s)</span>` : '';
+            const lockTitle = totCitas > 0 ? ` | 🔒 BLOQUEADO POR CITAS EN CE (Mañana: ${mCnt}, Tarde: ${tCnt})` : '';
 
             if (shift && shift.shift_period !== "LIBRE") {
                 const sp = shift.shift_period;
@@ -497,16 +504,18 @@ function renderMatrix() {
                 }
 
                 td.innerHTML = `
-                    <div class="${badgeClass}" title="${getShiftFullDescription(sp, srv, doc.name, d.day)}">
+                    <div class="${badgeClass}" title="${getShiftFullDescription(sp, srv, doc.name, d.day)}${lockTitle}">
                         <span>${badgeText}</span>
                         ${subText ? `<span class="text-[8px] opacity-80">${subText}</span>` : ''}
+                        ${lockHtml}
                     </div>
                 `;
             } else {
                 // Día libre (sin turno programado o marcado como LIBRE) - violeta con etiqueta 'Libre'
                 td.innerHTML = `
-                    <div class="shift-badge shift-LIBRE" title="${getShiftFullDescription('LIBRE', 'LIBRE', doc.name, d.day)}">
+                    <div class="shift-badge shift-LIBRE" title="${getShiftFullDescription('LIBRE', 'LIBRE', doc.name, d.day)}${lockTitle}">
                         <span class="text-[9px]">Libre</span>
+                        ${lockHtml}
                     </div>
                 `;
             }

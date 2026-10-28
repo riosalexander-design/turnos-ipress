@@ -22,7 +22,9 @@ from scheduler_engine import (
     calculate_deadline,
     record_doctor_shift,
     approve_day_discrepancy,
-    approve_all_day_discrepancies
+    approve_all_day_discrepancies,
+    get_month_appointment_locks,
+    register_shift_appointment_lock
 )
 from exporter import (
     generate_excel_schedule,
@@ -228,6 +230,8 @@ def api_get_schedule():
 
     quota_data = get_doctor_quota_summary(year, month)
     coverage_data = get_daily_coverage(year, month)
+    raw_locks = get_month_appointment_locks(year, month)
+    appointment_locks = {f"{doc_id}_{day}": info for (doc_id, day), info in raw_locks.items()}
 
     with get_connection() as conn:
         # Estado de aprobación
@@ -268,7 +272,8 @@ def api_get_schedule():
         "quota_summary": quota_data,
         "coverage": coverage_data,
         "discrepancies": disc_list,
-        "approval_status": approval_status
+        "approval_status": approval_status,
+        "appointment_locks": appointment_locks
     })
 
 @app.route("/api/shifts/update", methods=["POST"])
@@ -532,6 +537,37 @@ def api_upload_proposal():
     if not res["success"]:
         return jsonify({"success": False, "error": res["error"]}), res.get("status_code", 400)
 
+    return jsonify(res), 200
+
+@app.route("/api/appointments/lock-shift", methods=["POST"])
+def api_lock_shift_by_appointment():
+    """
+    Endpoint de integración vinculado al aplicativo de citas (citascsjp2.streamlit.app):
+    Cuando un paciente saca una cita en un turno, bloquea automáticamente ese turno y fecha
+    para el médico correspondiente, impidiendo que sea modificado en el app de horarios.
+    """
+    data = request.json or {}
+    year = int(data.get("year", datetime.now().year))
+    month = int(data.get("month", datetime.now().month))
+    day = int(data.get("day", 1))
+    shift_period = str(data.get("shift_period", "M")).strip().upper()
+    doctor_cmp = str(data.get("doctor_cmp", "")).strip()
+    doctor_id = data.get("doctor_id")
+    appointments_count = int(data.get("appointments_count", 1))
+    ticket_code = str(data.get("ticket_code", "")).strip()
+
+    res = register_shift_appointment_lock(
+        year=year,
+        month=month,
+        day=day,
+        shift_period=shift_period,
+        doctor_cmp=doctor_cmp,
+        doctor_id=int(doctor_id) if doctor_id else None,
+        appointments_count=appointments_count,
+        ticket_code=ticket_code
+    )
+    if not res["success"]:
+        return jsonify(res), 400
     return jsonify(res), 200
 
 @app.route("/api/export-excel", methods=["GET"])
