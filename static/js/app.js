@@ -111,7 +111,23 @@ function renderDoctorsSwitchMenu() {
     const container = document.getElementById("doctorsSwitchList");
     container.innerHTML = "";
 
-    state.doctorsList.forEach(doc => {
+    // Poblar también el selector de propuestas de médicos
+    const propSelect = document.getElementById("proposalDoctorSelect");
+    if (propSelect) {
+        const curPropVal = propSelect.value;
+        propSelect.innerHTML = '<option value="">-- Selecciona tu nombre --</option>';
+        state.doctorsList.filter(d => d.role === "doctor").forEach(d => {
+            const opt = document.createElement("option");
+            opt.value = d.id;
+            opt.textContent = `${d.name} (CMP: ${d.cmp} - ${d.condition})`;
+            propSelect.appendChild(opt);
+        });
+        if (curPropVal) propSelect.value = curPropVal;
+    }
+
+    // En el menú de sesión solo mostrar Jefatura Médica y RRHH
+    const managers = state.doctorsList.filter(doc => doc.role === "admin" || doc.role === "rrhh");
+    managers.forEach(doc => {
         const btn = document.createElement("button");
         btn.className = "w-full text-left px-3 py-2 text-xs hover:bg-slate-50 flex items-center justify-between border-b border-slate-50 transition";
         btn.onclick = () => openLoginModalForDoctor(doc);
@@ -120,9 +136,9 @@ function renderDoctorsSwitchMenu() {
         btn.innerHTML = `
             <div>
                 <div class="font-bold ${isCurrent ? 'text-blue-600' : 'text-slate-800'}">${doc.name}</div>
-                <div class="text-[10px] text-slate-400">CMP: ${doc.cmp} (${doc.condition})</div>
+                <div class="text-[10px] text-slate-400">${doc.cmp} (${doc.condition})</div>
             </div>
-            ${isCurrent ? '<span class="text-[10px] bg-blue-100 text-blue-700 font-bold px-1.5 py-0.5 rounded">Activo</span>' : '<span class="text-[10px] text-slate-400"><i class="fa-solid fa-lock"></i> PIN</span>'}
+            ${isCurrent ? '<span class="text-[10px] bg-blue-100 text-blue-700 font-bold px-1.5 py-0.5 rounded">Activo</span>' : '<span class="text-[10px] text-slate-400"><i class="fa-solid fa-lock"></i> Clave</span>'}
         `;
         container.appendChild(btn);
     });
@@ -143,7 +159,7 @@ function renderDoctorsSwitchMenu() {
     } else {
         optionsDiv.innerHTML = `
             <button onclick="openLoginModal()" class="w-full text-left px-3 py-1.5 text-xs text-blue-600 hover:bg-blue-50 rounded flex items-center gap-2 font-bold">
-                <i class="fa-solid fa-right-to-bracket"></i> Iniciar Sesión con PIN
+                <i class="fa-solid fa-right-to-bracket"></i> Iniciar Sesión (Jefatura / RRHH)
             </button>
         `;
     }
@@ -154,11 +170,11 @@ function populateDoctorLoginSelect() {
     const sel = document.getElementById("loginDoctorSelect");
     if (!sel || !state.doctorsList) return;
     const curVal = sel.value;
-    sel.innerHTML = '<option value="">-- Elige tu nombre de la lista --</option>';
-    state.doctorsList.forEach(d => {
+    sel.innerHTML = '<option value="">-- Elige tu perfil de gestión --</option>';
+    state.doctorsList.filter(d => d.role === "admin" || d.role === "rrhh").forEach(d => {
         const opt = document.createElement("option");
         opt.value = d.id;
-        const tag = d.role === "admin" ? "JEFATURA" : (d.role === "rrhh" ? "RRHH" : d.condition);
+        const tag = d.role === "admin" ? "JEFATURA" : "RRHH";
         opt.textContent = `${d.name} (${tag})`;
         sel.appendChild(opt);
     });
@@ -439,9 +455,9 @@ function renderMatrix() {
         // Celdas de cada día
         days.forEach(d => {
             const td = document.createElement("td");
-            td.className = `matrix-cell border-r border-slate-200 ${canEditThisRow ? 'doctor-cell-editable' : 'doctor-cell-locked'}`;
-            if (!canEditThisRow) {
-                td.title = `🔒 Bloqueado: Fila de ${doc.name}. Solo modificable con su propio PIN.`;
+            td.className = `matrix-cell border-r border-slate-200 ${isCurAdmin ? 'doctor-cell-editable' : 'doctor-cell-locked'}`;
+            if (!isCurAdmin) {
+                td.title = `🔒 Solo Jefatura Médica y RRHH pueden modificar el horario haciendo clic sobre la fecha/celda.`;
             }
 
             if (d.is_sunday) td.classList.add("col-sunday");
@@ -495,19 +511,11 @@ function renderMatrix() {
                 `;
             }
 
-            // Click listener estricto por médico
+            // Click listener exclusivo para Jefatura y RRHH con ventana pop-up de confirmación
             td.onclick = () => {
-                if (!state.currentUser) {
-                    alert("Debes iniciar sesión con tu CMP y PIN personal para programar tus turnos.");
-                    openLoginModalForDoctor(doc);
-                    return;
-                }
-                if (!canEditThisRow) {
-                    alert(`🚫 ACCESO DENEGADO - FILA BLOQUEADA:\n\nHas iniciado sesión como:\n${state.currentUser.name} (CMP ${state.currentUser.cmp})\n\nEsta fila pertenece a:\n${doc.name} (CMP ${doc.cmp})\n\nPor normativa de la IPRESS, solo el propio médico o el Administrador pueden modificar esta fila.`);
-                    return;
-                }
-                if (d.is_sunday && !isCurAdmin) {
-                    alert(`🚫 DOMINGO BLOQUEADO:\n\nEl Día ${d.day} es Domingo. Los domingos están bloqueados para los médicos y solo pueden ser habilitados o modificados por el Administrador.`);
+                if (!state.currentUser || !isCurAdmin) {
+                    alert("🔒 ACCESO EXCLUSIVO PARA JEFATURA Y RRHH:\n\nLos permisos de ingreso y modificación directa de turnos para médicos han sido revocados.\n\n• Si eres Médico Cirujano: descarga tu formato en blanco (.xlsx) y sube tu propuesta de horario en la sección superior.\n• Si eres Jefatura Médica o RRHH: inicia sesión para modificar o aprobar el horario.");
+                    openLoginModal();
                     return;
                 }
                 openShiftEditModal(doc, d, shift);
@@ -645,7 +653,7 @@ function getShiftFullDescription(sp, srv, docName, day) {
 }
 
 // -------------------------------------------------------------
-// MODAL DE ASIGNAR / EDITAR TURNO PROPIO
+// MODAL POP-UP DE CONFIRMACIÓN Y MODIFICACIÓN DE HORARIO (JEFATURA / RRHH)
 // -------------------------------------------------------------
 
 function openShiftEditModal(doctor, dayInfo, existingShift) {
@@ -658,9 +666,12 @@ function openShiftEditModal(doctor, dayInfo, existingShift) {
         existingShift: existingShift
     };
 
-    document.getElementById("modalShiftTitle").innerText = `Programar Turno: ${doctor.name.split(',')[0]}`;
+    document.getElementById("modalShiftTitle").innerText = `Modificar Horario: ${doctor.name.split(',')[0]}`;
     document.getElementById("modalShiftDocName").innerText = `${doctor.name} (${doctor.condition} - CMP ${doctor.cmp})`;
     document.getElementById("modalShiftDayDate").innerText = `Día ${dayInfo.day} - ${dayInfo.weekday_name} (${dayInfo.is_holiday ? dayInfo.holiday_name : 'Día Ordinario'})`;
+
+    const chk = document.getElementById("chkConfirmModification");
+    if (chk) chk.checked = false;
 
     // Seleccionar valor anterior o valor por defecto
     const currentPeriod = existingShift ? existingShift.shift_period : "M";
@@ -760,6 +771,11 @@ function showConfirmationToast(message) {
 
 async function handleSaveCurrentShift() {
     if (!state.activeCell) return;
+    const chk = document.getElementById("chkConfirmModification");
+    if (chk && !chk.checked) {
+        alert("Por favor marca la casilla confirmando tu deseo de modificar el horario antes de grabar el cambio.");
+        return;
+    }
     const period = document.querySelector("input[name='optPeriod']:checked").value;
     let service = "DES";
     if (period === "DES") {
@@ -788,7 +804,7 @@ async function handleSaveCurrentShift() {
         if (data.success) {
             closeModal("modalShiftEdit");
             await loadAll();
-            showConfirmationToast(data.message || "✅ El turno fue grabado correctamente y ya es visible para todos los médicos y el Administrador.");
+            showConfirmationToast(data.message || "✅ El turno fue grabado correctamente y ya es visible en pantalla.");
         } else {
             alert(data.error || "Error al guardar el turno.");
         }
@@ -799,6 +815,11 @@ async function handleSaveCurrentShift() {
 
 async function handleDeleteCurrentShift() {
     if (!state.activeCell) return;
+    const chk = document.getElementById("chkConfirmModification");
+    if (chk && !chk.checked) {
+        alert("Por favor marca la casilla confirmando tu deseo de modificar el horario antes de dejar libre la fecha.");
+        return;
+    }
     try {
         const res = await fetch("/api/shifts/update", {
             method: "POST",
@@ -821,6 +842,54 @@ async function handleDeleteCurrentShift() {
         }
     } catch (err) {
         console.error("Error al borrar:", err);
+    }
+}
+
+function downloadBlankProposalTemplate() {
+    const sel = document.getElementById("proposalDoctorSelect");
+    const docId = sel ? sel.value : "";
+    if (!docId) {
+        alert("Por favor selecciona primero tu nombre de médico titular en el paso 1.");
+        return;
+    }
+    window.location.href = `/api/proposals/template?year=${state.year}&month=${state.month}&doctor_id=${docId}`;
+}
+
+async function uploadDoctorProposalFile() {
+    const sel = document.getElementById("proposalDoctorSelect");
+    const docId = sel ? sel.value : "";
+    if (!docId) {
+        alert("Por favor selecciona tu nombre de médico titular en el paso 1.");
+        return;
+    }
+    const fileInput = document.getElementById("proposalFileInput");
+    if (!fileInput || !fileInput.files || fileInput.files.length === 0) {
+        alert("Por favor selecciona tu archivo Excel (.xlsx) con tu propuesta.");
+        return;
+    }
+
+    const formData = new FormData();
+    formData.append("year", state.year);
+    formData.append("month", state.month);
+    formData.append("doctor_id", docId);
+    formData.append("file", fileInput.files[0]);
+
+    try {
+        const res = await fetch("/api/proposals/upload", {
+            method: "POST",
+            body: formData
+        });
+        const data = await res.json();
+        if (data.success) {
+            fileInput.value = "";
+            await loadAll();
+            showConfirmationToast(data.message);
+        } else {
+            alert(data.error || "No se pudo procesar la propuesta.");
+        }
+    } catch (err) {
+        console.error("Error al subir propuesta:", err);
+        alert("Error de conexión al subir la propuesta.");
     }
 }
 

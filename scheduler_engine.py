@@ -312,19 +312,23 @@ def record_doctor_shift(
 ) -> dict:
     """
     Graba o modifica el turno de un médico cumpliendo todas las reglas de negocio:
-    1. Solo el propio médico que lo registra o el Administrador pueden modificarlo.
-    2. Los domingos están bloqueados para los médicos, pero habilitados para el Administrador.
-    3. Siempre que se registre un turno de 12 horas ('12h'), el día siguiente tendrá descanso ('DES')
-       si es día laborable dentro del mes.
-    4. Queda grabado y visible inmediatamente para todos los médicos y el Administrador.
+    1. EXCLUSIVO para Jefatura Médica ('admin') y Recursos Humanos ('rrhh'). Los médicos tienen revocado
+       el permiso de ingreso manual y únicamente pueden presentar propuestas mediante el formato Excel.
+    2. Siempre que se registre un turno de 12 horas ('12h'), el día siguiente tendrá descanso ('DES')
+       si es día laborable dentro del mes y aún no tiene turno asignado.
+    3. Queda grabado y visible inmediatamente en el horario en pantalla y en el log de cambios.
     """
     if not user_id:
-        return {"success": False, "error": "Debe iniciar sesión para grabar un turno.", "status_code": 401}
+        return {"success": False, "error": "Debe iniciar sesión como Jefatura o RRHH para modificar turnos.", "status_code": 401}
 
-    if user_role not in ("admin", "rrhh") and int(user_id) != int(doctor_id):
+    if user_role not in ("admin", "rrhh"):
         return {
             "success": False,
-            "error": "ACCESO DENEGADO: Solo el médico titular, la Jefatura Médica o Recursos Humanos pueden modificar este turno.",
+            "error": (
+                "ACCESO DENEGADO: Se han revocado los permisos de ingreso directo para médicos. "
+                "Únicamente Jefatura Médica y RRHH pueden aprobar o modificar turnos directamente. "
+                "Los médicos deben descargar su formato en blanco y subir su archivo de propuesta."
+            ),
             "status_code": 403
         }
 
@@ -332,14 +336,6 @@ def record_doctor_shift(
     num_days = month_info["num_days"]
     if day < 1 or day > num_days:
         return {"success": False, "error": "Día inválido para el mes seleccionado.", "status_code": 400}
-
-    day_info = month_info["days"][day - 1]
-    if day_info["is_sunday"] and user_role not in ("admin", "rrhh"):
-        return {
-            "success": False,
-            "error": "DOMINGO BLOQUEADO: Los domingos están bloqueados para los médicos. Solo la Jefatura Médica o Recursos Humanos pueden programar turnos en domingo.",
-            "status_code": 403
-        }
 
     with get_connection() as conn:
         doc = conn.execute("SELECT name FROM doctors WHERE id = ?", (doctor_id,)).fetchone()

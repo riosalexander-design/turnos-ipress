@@ -208,6 +208,43 @@
             </div>
         </div>
 
+        <!-- PANEL DE PROPUESTA DE HORARIO PARA MÉDICOS (FORMATO EN BLANCO Y SUBIDA EN MEMORIA) -->
+        <div class="bg-white p-4 rounded-xl shadow-sm border border-blue-200 flex flex-col gap-3">
+            <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2">
+                <div class="flex items-center gap-2">
+                    <i class="fa-solid fa-file-Arrow-up text-blue-600 text-base"></i>
+                    <div>
+                        <h3 class="text-xs font-bold text-slate-800 uppercase">Propuesta de Horario para Médicos Cirujanos (Excel)</h3>
+                        <p class="text-[11px] text-slate-500">
+                            Los permisos de ingreso directo para médicos están revocados (exclusivos para <strong>Jefatura</strong> y <strong>RRHH</strong>).
+                            Cada médico debe descargar su formato en blanco y subir su propia propuesta. El archivo no se guarda en el servidor.
+                        </p>
+                    </div>
+                </div>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
+                <div>
+                    <label class="block text-[11px] font-bold text-slate-700 mb-1">1. Selecciona tu Nombre (Médico Titular):</label>
+                    <select id="proposalDoctorSelect" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs bg-white focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                        <option value="">-- Selecciona tu nombre --</option>
+                    </select>
+                </div>
+                <div>
+                    <button onclick="downloadBlankProposalTemplate()" class="w-full bg-blue-50 hover:bg-blue-100 text-blue-800 border border-blue-300 font-bold text-xs px-3.5 py-2 rounded-lg flex items-center justify-center gap-2 transition">
+                        <i class="fa-solid fa-file-arrow-down text-blue-600"></i>
+                        <span>2. Descargar Formato en Blanco (.xlsx)</span>
+                    </button>
+                </div>
+                <div class="flex items-center gap-2">
+                    <input type="file" id="proposalFileInput" accept=".xlsx" class="block w-full text-xs text-slate-600 file:mr-2 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100">
+                    <button onclick="uploadDoctorProposalFile()" class="bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs px-3.5 py-2 rounded-lg shadow-sm whitespace-nowrap flex items-center gap-1.5 transition">
+                        <i class="fa-solid fa-cloud-arrow-up"></i>
+                        <span>3. Subir Propuesta</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+
         <!-- BARRA DE HERRAMIENTAS Y ACCIONES -->
         <div class="bg-white p-4 rounded-xl shadow-sm border border-slate-200/80 flex flex-wrap items-center justify-between gap-3">
             
@@ -224,10 +261,10 @@
                     <span>Centro de Discrepancias (<span id="btnDiscCount">0</span>)</span>
                 </button>
 
-                <!-- Botón Validar y Aprobar Horario -->
+                <!-- Botón Validar y Aprobar Horario (Solo Jefatura/RRHH) -->
                 <button onclick="triggerValidateApproval()" class="bg-emerald-600 hover:bg-emerald-700 text-white font-medium text-xs px-3.5 py-2 rounded-lg shadow-sm flex items-center gap-2 transition active:scale-95">
                     <i class="fa-solid fa-check-double"></i>
-                    <span>Validar y Aprobar Horario</span>
+                    <span>Aprobar Horario (Jefatura / RRHH)</span>
                 </button>
             </div>
 
@@ -273,7 +310,7 @@
                 </span>
             </div>
             <div class="text-[11px] text-slate-500 italic">
-                * Solo el propio médico y el Administrador pueden modificar su fila (Domingos bloqueados para médicos)
+                * Solo Jefatura Médica y RRHH pueden aprobar o modificar el horario haciendo clic sobre la fecha/celda
             </div>
         </div>
 
@@ -335,14 +372,14 @@
     </footer>
 
     <!-- ============================================================== -->
-    <!-- MODAL 1: ASIGNAR / EDITAR TURNO PROPIO -->
+    <!-- MODAL 1: POP-UP DE CONFIRMACIÓN Y MODIFICACIÓN DE HORARIO (JEFATURA / RRHH) -->
     <!-- ============================================================== -->
     <div id="modalShiftEdit" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
         <div class="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-md overflow-hidden transform transition-all">
             <div class="bg-gradient-to-r from-blue-800 to-indigo-900 text-white p-4 flex justify-between items-center">
                 <div class="flex items-center gap-2">
                     <i class="fa-solid fa-clock text-sky-300"></i>
-                    <h3 class="font-bold text-sm" id="modalShiftTitle">Asignar Mi Turno</h3>
+                    <h3 class="font-bold text-sm" id="modalShiftTitle">Modificar Horario (Jefatura / RRHH)</h3>
                 </div>
                 <button onclick="closeModal('modalShiftEdit')" class="text-slate-300 hover:text-white">
                     <i class="fa-solid fa-xmark text-lg"></i>
@@ -350,9 +387,13 @@
             </div>
             
             <div class="p-5 space-y-4">
-                <div class="bg-slate-50 p-3 rounded-xl border border-slate-200 text-xs">
-                    <div class="font-bold text-slate-700" id="modalShiftDocName">Dr. Nombre</div>
-                    <div class="text-slate-500" id="modalShiftDayDate">Día: 15/10/2026 (Jueves)</div>
+                <div class="bg-amber-50 p-3 rounded-xl border border-amber-300 text-xs text-amber-900">
+                    <div class="font-bold flex items-center gap-1.5">
+                        <i class="fa-solid fa-circle-question text-amber-600"></i>
+                        <span>¿Desea modificar el horario en esta fecha?</span>
+                    </div>
+                    <div class="font-bold text-slate-800 mt-1" id="modalShiftDocName">Dr. Nombre</div>
+                    <div class="text-slate-600" id="modalShiftDayDate">Día: 15/10/2026 (Jueves)</div>
                 </div>
 
                 <!-- Selección de Período -->
@@ -390,6 +431,14 @@
                     </div>
                 </div>
 
+                <!-- Confirmación explícita del deseo de modificación -->
+                <div class="bg-blue-50/80 p-3 rounded-xl border border-blue-200">
+                    <label class="flex items-start gap-2 cursor-pointer text-xs text-blue-900 font-semibold">
+                        <input type="checkbox" id="chkConfirmModification" class="mt-0.5 rounded border-blue-400 text-blue-600 focus:ring-blue-500">
+                        <span>Confirmo que deseo modificar el horario en esta fecha y grabar el cambio en el sistema.</span>
+                    </label>
+                </div>
+
                 <!-- Botón borrar turno y guardar -->
                 <div class="pt-3 border-t border-slate-200 flex justify-between items-center bg-slate-50 -mx-5 -mb-5 p-4 rounded-b-2xl">
                     <button onclick="handleDeleteCurrentShift()" class="text-xs text-rose-600 hover:text-rose-800 font-bold flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg hover:bg-rose-50 transition">
@@ -401,7 +450,7 @@
                         </button>
                         <button onclick="handleSaveCurrentShift()" class="px-5 py-2 text-xs bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg shadow-md hover:shadow-lg transition flex items-center gap-2 active:scale-95">
                             <i class="fa-solid fa-floppy-disk text-sm"></i>
-                            <span>Guardar Propuesta</span>
+                            <span>Confirmar y Grabar Cambio</span>
                         </button>
                     </div>
                 </div>

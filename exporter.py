@@ -5,11 +5,13 @@ para la programación mensual de médicos de la IPRESS usando openpyxl.
 """
 
 import io
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.datavalidation import DataValidation
 from holidays_pe import get_month_info
-from scheduler_engine import get_doctor_quota_summary, get_daily_coverage
+from database import get_connection, log_audit
+from scheduler_engine import get_doctor_quota_summary, get_daily_coverage, sync_discrepancies_db
 
 # Paleta de colores asistenciales
 COLOR_HEADER_BG = "1F4E79"        # Azul institucional oscuro
@@ -318,3 +320,411 @@ def generate_excel_schedule(year: int, month: int, ipress_name: str = "IPRESS SA
     wb.save(output)
     output.seek(0)
     return output
+
+
+VALID_PROPOSAL_SHIFT_CODES = [
+    "M-TU",
+    "M-CE",
+    "M-TS",
+    "T-TU",
+    "T-CE",
+    "12h (TS+TU)",
+    "12h (TU+CE)",
+    "12h (CE+TU)",
+    "12h (TS+CE)",
+    "12h (TU+TU)",
+    "12h (CE+CE)",
+    "DES",
+    "Libre"
+]
+
+
+def _normalize_shift_code(raw_val: str) -> tuple[str, str] | None:
+    """
+    Convierte el texto de una celda de propuesta Excel en (shift_period, service).
+    Retorna ('LIBRE', 'LIBRE') si se indica Libre o vacío, o None si el código no es reconocido.
+    """
+    if raw_val is None:
+        return ("LIBRE", "LIBRE")
+    txt = str(raw_val).strip()
+    if not txt or txt.upper() in ("LIBRE", "SIN TURNO", "-", "DOMINGO (BLOQUEADO)"):
+        return ("LIBRE", "LIBRE")
+
+    u = txt.upper().replace(" ", "")
+    if u in ("M-TU", "MTU"):
+        return ("M", "TU")
+    if u in ("M-CE", "MCE"):
+        return ("M", "CE")
+    if u in ("M-TS", "MTS"):
+        return ("M", "TS")
+    if u in ("T-TU", "TTU"):
+        return ("T", "TU")
+    if u in ("T-CE", "TCE"):
+        return ("T", "CE")
+    if u in ("DES", "DESCANSO"):
+        return ("DES", "DES")
+
+    if u.startswith("12H"):
+        for srv_comb in ("TS+TU", "TU+CE", "CE+TU", "TS+CE", "TU+TU", "CE+CE"):
+            if srv_comb in u:
+                return ("12h", srv_comb)
+        return ("12h", "TS+TU")
+
+    for srv_comb in ("TS+TU", "TU+CE", "CE+TU", "TS+CE", "TU+TU", "CE+CE"):
+        if u == srv_comb:
+            return ("12h", srv_comb)
+
+    return None
+
+
+def generate_blank_proposal_template(year: int, month: int, doctor: dict, ipress_name: str = "IPRESS SALUD PERÚ") -> io.BytesIO:
+    """
+    Genera en memoria un formato Excel (.xlsx) EN BLANCO personalizado para que un único médico
+    registre su propuesta mensual de turnos y luego la suba al sistema.
+    Incluye metadatos de validación (ID, CMP, Nombre, Mes, Año) para impedir que un médico
+    presente propuestas de otro médico.
+    """
+    wb = Workbook()
+    ws = wb.active
+    ws.title = f"Propuesta {month:02d}-{year}"
+    ws.views.sheetView[0].showGridLines = True
+
+    month_info = get_month_info(year, month)
+    num_days = month_info["num_days"]
+    quota = month_info["monthly_quota"]
+
+    thin_border = Border(
+        left=Side(style='thin', color='BFBFBF'),
+        right=Side(style='thin', color='BFBFBF'),
+        top=Side(style='thin', color='BFBFBF'),
+        bottom=Side(style='thin', color='BFBFBF')
+    )
+
+    # Encabezado institucional
+    ws.merge_cells("A1:E1")
+    ws["A1"] = f"{ipress_name} - FORMATO OFICIAL DE PROPUESTA DE HORARIO MÉDICO"
+    ws["A1"].font = Font(name="Calibri", size=13, bold=True, color="1F4E79")
+    ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
+
+    ws.merge_cells("A2:E2")
+    ws["A2"] = f"MES DE PROGRAMACIÓN: {month_info['month_name'].upper()} {year} | META MENSUAL: {quota} TURNOS"
+    ws["A2"].font = Font(name="Calibri", size=10, bold=True, color="334155")
+    ws["A2"].alignment = Alignment(horizontal="center", vertical="center")
+
+    # Metadatos del médico titular (Filas 4 a 7) - usados para validar que solo suba su propia propuesta
+    meta_rows = [
+        ("MÉDICO TITULAR:", doctor["name"], "ID INTERNO:", doctor["id"]),
+        ("CMP:", str(doctor["cmp"]), "CONDICIÓN:", doctor.get("condition", "")),
+        ("AÑO:", year, "MES N°:", month),
+    ]
+    for idx_m, (lbl1, val1, lbl2, val2) in enumerate(meta_rows, start=4):
+        ws.cell(row=idx_m, column=1, value=lbl1).font = Font(bold=True, size=10, color="1F4E79")
+        c_v1 = ws.cell(row=idx_m, column=2, value=val1)
+        c_v1.font = Font(bold=True, size=10)
+        ws.cell(row=idx_m, column=3, value=lbl2).font = Font(bold=True, size=10, color="1F4E79")
+        c_v2 = ws.cell(row=idx_m, column=4, value=val2)
+        c_v2.font = Font(bold=True, size=10)
+
+    # Instrucciones breves
+    ws.merge_cells("A8:E8")
+    ws["A8"] = (
+        "INSTRUCCIONES: Seleccione su turno propuesto en la columna D para cada día laborable (Lunes a Sábado). "
+        "Los domingos están bloqueados para médicos. Este formato es personal e intransferible."
+    )
+    ws["A8"].font = Font(size=9, italic=True, color="7F1D1D")
+
+    # Tabla de días (Fila 10)
+    header_row = 10
+    headers = ["DÍA", "DÍA SEMANA", "CONDICIÓN DEL DÍA", "TURNO PROPUESTO (SELECCIONAR)", "OBSERVACIONES"]
+    for col_i, h_text in enumerate(headers, start=1):
+        c = ws.cell(row=header_row, column=col_i, value=h_text)
+        c.font = Font(bold=True, color=COLOR_HEADER_TXT, size=10)
+        c.fill = PatternFill(start_color=COLOR_HEADER_BG, end_color=COLOR_HEADER_BG, fill_type="solid")
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        c.border = thin_border
+    ws.row_dimensions[header_row].height = 24
+
+    # Lista desplegable de códigos válidos en Excel
+    dv = DataValidation(
+        type="list",
+        formula1=f'"{",".join(VALID_PROPOSAL_SHIFT_CODES)}"',
+        allow_blank=True
+    )
+    ws.add_data_validation(dv)
+
+    start_data_row = 11
+    for d_info in month_info["days"]:
+        d_num = d_info["day"]
+        r_idx = start_data_row + (d_num - 1)
+        ws.row_dimensions[r_idx].height = 20
+
+        c_day = ws.cell(row=r_idx, column=1, value=d_num)
+        c_wday = ws.cell(row=r_idx, column=2, value=d_info["weekday_name"])
+        if d_info["is_sunday"]:
+            cond_txt = "DOMINGO (Bloqueado para médicos)"
+        elif d_info["is_holiday"]:
+            cond_txt = f"FERIADO ({d_info['holiday_name']})"
+        else:
+            cond_txt = "Día Laborable"
+        c_cond = ws.cell(row=r_idx, column=3, value=cond_txt)
+        c_shift = ws.cell(row=r_idx, column=4, value="")
+        c_obs = ws.cell(row=r_idx, column=5, value="")
+
+        for col_i, cell_obj in enumerate([c_day, c_wday, c_cond, c_shift, c_obs], start=1):
+            cell_obj.border = thin_border
+            cell_obj.alignment = Alignment(horizontal="center" if col_i in (1, 4) else "left", vertical="center")
+            cell_obj.font = Font(size=10, bold=(col_i == 4))
+
+        if d_info["is_sunday"]:
+            for cell_obj in (c_day, c_wday, c_cond, c_shift, c_obs):
+                cell_obj.fill = PatternFill(start_color=COLOR_WEEKEND_SUN, end_color=COLOR_WEEKEND_SUN, fill_type="solid")
+            c_shift.value = "Libre"
+            c_shift.font = Font(size=9, italic=True, color="595959")
+        else:
+            if d_info["is_holiday"]:
+                for cell_obj in (c_day, c_wday, c_cond):
+                    cell_obj.fill = PatternFill(start_color=COLOR_HOLIDAY, end_color=COLOR_HOLIDAY, fill_type="solid")
+            c_shift.fill = PatternFill(start_color="FFFBEB", end_color="FFFBEB", fill_type="solid")
+            dv.add(c_shift)
+
+    # Leyenda de códigos válidos al costado (Columnas G y H)
+    ws.cell(row=10, column=7, value="CÓDIGO DE TURNO").font = Font(bold=True, size=9, color=COLOR_HEADER_TXT)
+    ws.cell(row=10, column=7).fill = PatternFill(start_color=COLOR_HEADER_BG, end_color=COLOR_HEADER_BG, fill_type="solid")
+    ws.cell(row=10, column=8, value="SIGNIFICADO ASISTENCIAL").font = Font(bold=True, size=9, color=COLOR_HEADER_TXT)
+    ws.cell(row=10, column=8).fill = PatternFill(start_color=COLOR_HEADER_BG, end_color=COLOR_HEADER_BG, fill_type="solid")
+
+    legend_items = [
+        ("M-TU", "Mañana (6h) - Tópico de Urgencias"),
+        ("M-CE", "Mañana (6h) - Consultorio de Medicina"),
+        ("M-TS", "Mañana (6h) - Telesalud / TBC / MCI"),
+        ("T-TU", "Tarde (6h) - Tópico de Urgencias"),
+        ("T-CE", "Tarde (6h) - Consultorio de Medicina"),
+        ("12h (TS+TU)", "12 Horas: Mañana Telesalud + Tarde Urgencias"),
+        ("12h (TU+CE)", "12 Horas: Mañana Urgencias + Tarde Consultorio"),
+        ("12h (CE+TU)", "12 Horas: Mañana Consultorio + Tarde Urgencias"),
+        ("12h (TS+CE)", "12 Horas: Mañana Telesalud + Tarde Consultorio"),
+        ("12h (TU+TU)", "12 Horas: Mañana Urgencias + Tarde Urgencias"),
+        ("12h (CE+CE)", "12 Horas: Mañana Consultorio + Tarde Consultorio"),
+        ("DES", "Descanso post-guardia de 12 horas"),
+        ("Libre", "Día Libre / Sin turno"),
+    ]
+    for idx_l, (code_l, desc_l) in enumerate(legend_items, start=11):
+        c1 = ws.cell(row=idx_l, column=7, value=code_l)
+        c2 = ws.cell(row=idx_l, column=8, value=desc_l)
+        c1.font = Font(bold=True, size=9)
+        c2.font = Font(size=9)
+        c1.border = thin_border
+        c2.border = thin_border
+
+    ws.column_dimensions["A"].width = 8
+    ws.column_dimensions["B"].width = 16
+    ws.column_dimensions["C"].width = 28
+    ws.column_dimensions["D"].width = 28
+    ws.column_dimensions["E"].width = 25
+    ws.column_dimensions["F"].width = 4
+    ws.column_dimensions["G"].width = 18
+    ws.column_dimensions["H"].width = 42
+
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+    return output
+
+
+def parse_and_import_doctor_proposal(
+    file_bytes: bytes,
+    expected_year: int,
+    expected_month: int,
+    expected_doctor_id: int
+) -> dict:
+    """
+    Procesa en memoria (io.BytesIO, sin guardar el archivo en disco) la propuesta Excel subida por un médico.
+    Reglas estrictas:
+    1. Un médico SOLO puede subir la propuesta que le corresponde a él (valida CMP / ID / Nombre del archivo).
+       Si el archivo pertenece a otro médico o incluye filas de otro médico, se rechaza con error 403.
+    2. Registra los turnos como propuesta (is_proposal = 1) en la tabla 'shifts'.
+    3. Detecta automáticamente cualquier cruce con las propuestas de otros médicos y lo sincroniza en 'discrepancies'.
+    4. Registra la carga de la propuesta en el log de auditoría ('audit_logs').
+    5. No almacena el archivo Excel en disco en ningún momento.
+    """
+    with get_connection() as conn:
+        doc_row = conn.execute(
+            "SELECT id, name, cmp, condition, role FROM doctors WHERE id = ? AND is_active = 1",
+            (expected_doctor_id,)
+        ).fetchone()
+        if not doc_row or doc_row["role"] != "doctor":
+            return {"success": False, "error": "Médico inválido o no autorizado para presentar propuestas.", "status_code": 403}
+        doctor = dict(doc_row)
+
+    try:
+        stream = io.BytesIO(file_bytes)
+        wb = load_workbook(stream, data_only=True)
+        ws = wb.active
+    except Exception as exc:
+        return {"success": False, "error": f"El archivo subido no es un Excel (.xlsx) válido: {exc}", "status_code": 400}
+
+    # Validar identidad del médico en el formato (Fila 4 y Fila 5)
+    file_doc_name = str(ws.cell(row=4, column=2).value or "").strip()
+    file_doc_id = ws.cell(row=4, column=4).value
+    file_doc_cmp = str(ws.cell(row=5, column=2).value or "").strip()
+    file_year = ws.cell(row=6, column=2).value
+    file_month = ws.cell(row=6, column=4).value
+
+    # Verificar que el archivo no corresponda a otro médico
+    if file_doc_cmp and file_doc_cmp != str(doctor["cmp"]).strip():
+        return {
+            "success": False,
+            "error": (
+                f"ACCESO DENEGADO: El archivo cargado pertenece al CMP {file_doc_cmp} ({file_doc_name}), "
+                f"pero usted ha seleccionado a {doctor['name']} (CMP {doctor['cmp']}). "
+                f"Un médico solo puede cargar la propuesta que le corresponde a él mismo."
+            ),
+            "status_code": 403
+        }
+
+    if file_doc_id is not None and str(file_doc_id).strip().isdigit():
+        if int(str(file_doc_id).strip()) != int(doctor["id"]):
+            return {
+                "success": False,
+                "error": (
+                    f"ACCESO DENEGADO: El formato corresponde a otro médico ({file_doc_name}). "
+                    f"Un médico no puede proponer el horario de otro médico."
+                ),
+                "status_code": 403
+            }
+
+    if file_doc_name and doctor["name"].lower() not in file_doc_name.lower() and file_doc_name.lower() not in doctor["name"].lower():
+        return {
+            "success": False,
+            "error": (
+                f"ACCESO DENEGADO: El nombre del formato ('{file_doc_name}') no coincide con el médico titular ('{doctor['name']}'). "
+                f"Un médico solo puede subir su propia propuesta."
+            ),
+            "status_code": 403
+        }
+
+    if not file_doc_cmp and not file_doc_name:
+        return {
+            "success": False,
+            "error": "Formato inválido: Descargue primero su plantilla oficial en blanco desde el aplicativo.",
+            "status_code": 400
+        }
+
+    if file_year is not None and str(file_year).strip().isdigit() and int(str(file_year).strip()) != int(expected_year):
+        return {
+            "success": False,
+            "error": f"El archivo corresponde al año {file_year}, pero está visualizando el año {expected_year}.",
+            "status_code": 400
+        }
+
+    if file_month is not None and str(file_month).strip().isdigit() and int(str(file_month).strip()) != int(expected_month):
+        return {
+            "success": False,
+            "error": f"El archivo corresponde al mes {file_month}, pero está visualizando el mes {expected_month}.",
+            "status_code": 400
+        }
+
+    month_info = get_month_info(expected_year, expected_month)
+    num_days = month_info["num_days"]
+    days_meta = {d["day"]: d for d in month_info["days"]}
+
+    parsed_shifts = {}
+    start_data_row = 11
+    for r_idx in range(start_data_row, start_data_row + num_days):
+        day_val = ws.cell(row=r_idx, column=1).value
+        if day_val is None or not str(day_val).strip().isdigit():
+            continue
+        d_num = int(str(day_val).strip())
+        if d_num < 1 or d_num > num_days:
+            continue
+
+        raw_shift = ws.cell(row=r_idx, column=4).value
+        norm = _normalize_shift_code(raw_shift)
+        if norm is None:
+            return {
+                "success": False,
+                "error": f"Código de turno no válido en el Día {d_num}: '{raw_shift}'. Use los valores de la lista desplegable.",
+                "status_code": 400
+            }
+
+        sp, srv = norm
+        # Los domingos están bloqueados para propuestas médicas
+        if days_meta[d_num]["is_sunday"] and sp not in ("LIBRE",):
+            return {
+                "success": False,
+                "error": f"Día {d_num} es Domingo: Los médicos no pueden proponer turnos en domingo (solo Jefatura o RRHH).",
+                "status_code": 403
+            }
+        parsed_shifts[d_num] = (sp, srv)
+
+    # Cerrar el workbook y descartar el buffer de memoria explícitamente
+    wb.close()
+    stream.close()
+
+    # Guardar propuesta en la base de datos para este único médico
+    saved_count = 0
+    summary_parts = []
+    with get_connection() as conn:
+        conn.execute(
+            "DELETE FROM shifts WHERE year = ? AND month = ? AND doctor_id = ?",
+            (expected_year, expected_month, doctor["id"])
+        )
+
+        for d_num in range(1, num_days + 1):
+            sp, srv = parsed_shifts.get(d_num, ("LIBRE", "LIBRE"))
+            if sp != "LIBRE":
+                conn.execute("""
+                    INSERT INTO shifts (year, month, day, shift_period, service, doctor_id, is_proposal, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
+                    ON CONFLICT(year, month, day, doctor_id) DO UPDATE SET
+                        shift_period = excluded.shift_period,
+                        service = excluded.service,
+                        is_proposal = 1,
+                        updated_at = CURRENT_TIMESTAMP
+                """, (expected_year, expected_month, d_num, sp, srv, doctor["id"]))
+                saved_count += 1
+                summary_parts.append(f"Día {d_num:02d}:{sp}({srv})")
+
+                # Si es 12h, asegurar descanso post-guardia (DES) al día siguiente si es laborable y no fue especificado
+                if sp == "12h" and (d_num + 1) <= num_days and not days_meta[d_num + 1]["is_sunday"]:
+                    next_sp, _ = parsed_shifts.get(d_num + 1, ("LIBRE", "LIBRE"))
+                    if next_sp == "LIBRE":
+                        parsed_shifts[d_num + 1] = ("DES", "DES")
+
+        conn.commit()
+
+        details_log = (
+            f"Carga de propuesta mensual ({month_info['month_name']} {expected_year}) por {doctor['name']} "
+            f"(CMP {doctor['cmp']}): {saved_count} días registrados [{', '.join(summary_parts[:12])}"
+            f"{'...' if len(summary_parts) > 12 else ''}]. Archivo procesado en memoria y descartado."
+        )
+        log_audit(
+            doctor["id"],
+            doctor["name"],
+            "Carga de Propuesta (Excel)",
+            details_log,
+            conn=conn
+        )
+
+    # Sincronizar discrepancias para detectar cualquier cruce con otros médicos
+    sync_discrepancies_db(expected_year, expected_month)
+
+    with get_connection() as conn:
+        doctor_discs = conn.execute("""
+            SELECT COUNT(*) as cnt FROM discrepancies
+            WHERE year = ? AND month = ? AND status = 'open'
+              AND (doctor1_id = ? OR doctor2_id = ?)
+        """, (expected_year, expected_month, doctor["id"], doctor["id"])).fetchone()["cnt"]
+
+    return {
+        "success": True,
+        "doctor_id": doctor["id"],
+        "doctor_name": doctor["name"],
+        "saved_days_count": saved_count,
+        "discrepancies_detected": doctor_discs,
+        "message": (
+            f"Propuesta de {doctor['name']} cargada con éxito ({saved_count} días programados). "
+            f"{f'Se detectaron {doctor_discs} cruce(s) de horario en la sección de Discrepancias.' if doctor_discs > 0 else 'Sin cruces detectados.'}"
+        ),
+        "status_code": 200
+    }

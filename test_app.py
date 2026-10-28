@@ -35,7 +35,11 @@ from scheduler_engine import (
     record_doctor_shift,
     reopen_schedule
 )
-from exporter import generate_excel_schedule
+from exporter import (
+    generate_excel_schedule,
+    generate_blank_proposal_template,
+    parse_and_import_doctor_proposal
+)
 import app as flask_app
 
 
@@ -71,8 +75,8 @@ class TestIPRESSScheduling(unittest.TestCase):
         self.assertIn("Día 10 a las 00:00 hrs", desc_b)
         print("[OK] Test 2: Plazo de 72h con tope al Dia 10 a las 00:00 horas verificado.")
 
-    def test_03_doctor_isolation_sunday_block_and_confirmation(self):
-        """Verifica aislamiento por médico, bloqueo de domingos para médicos (no para Admin) y mensaje de confirmación."""
+    def test_03_doctor_revoked_direct_entry_and_admin_rrhh_exclusive_modification(self):
+        """Verifica que los médicos tengan revocado el ingreso directo y que solo Jefatura y RRHH puedan modificar."""
         client = flask_app.app.test_client()
 
         with client.session_transaction() as sess:
@@ -80,46 +84,30 @@ class TestIPRESSScheduling(unittest.TestCase):
             sess["user_name"] = "Caldas Pacsi, Lily Katherine"
             sess["user_role"] = "doctor"
 
-        # 1. Intento de modificar la fila de otro médico (Dra. Chunga, id=2) -> 403
-        res = client.post("/api/shifts/update", json={
-            "year": 2026, "month": 10, "day": 5, "doctor_id": 2, "shift_period": "M", "service": "TU"
-        })
-        self.assertEqual(res.status_code, 403)
-        self.assertIn("ACCESO DENEGADO", res.get_json()["error"])
-
-        # 2. Intento de un médico de programar en DOMINGO (Día 4 de Octubre 2026 es Domingo) -> 403
-        res_sun_doc = client.post("/api/shifts/update", json={
-            "year": 2026, "month": 10, "day": 4, "doctor_id": 1, "shift_period": "M", "service": "TU"
-        })
-        self.assertEqual(res_sun_doc.status_code, 403)
-        self.assertIn("DOMINGO BLOQUEADO", res_sun_doc.get_json()["error"])
-
-        # 3. Modificar su propia fila en día hábil -> 200 OK + confirmación de turno grabado
-        res_ok = client.post("/api/shifts/update", json={
+        # 1. Cualquier intento de un médico de modificar turnos directamente (incluso su propia fila) -> 403
+        res_own_doc = client.post("/api/shifts/update", json={
             "year": 2026, "month": 10, "day": 5, "doctor_id": 1, "shift_period": "M", "service": "TU"
         })
-        self.assertEqual(res_ok.status_code, 200)
-        data_ok = res_ok.get_json()
-        self.assertTrue(data_ok["success"])
-        self.assertIn("El turno fue grabado", data_ok["message"])
+        self.assertEqual(res_own_doc.status_code, 403)
+        self.assertIn("ACCESO DENEGADO", res_own_doc.get_json()["error"])
 
-        # 4. El Administrador SÍ puede programar en Domingo y modificar cualquier médico -> 200 OK
+        # 2. Jefatura Médica (admin) SÍ puede modificar cualquier turno -> 200 OK
         with client.session_transaction() as sess:
             sess["user_id"] = 6
             sess["user_name"] = "Jefatura Médica IPRESS"
             sess["user_role"] = "admin"
 
-        res_sun_admin = client.post("/api/shifts/update", json={
-            "year": 2026, "month": 10, "day": 4, "doctor_id": 1, "shift_period": "M", "service": "TU"
+        res_admin_ok = client.post("/api/shifts/update", json={
+            "year": 2026, "month": 10, "day": 5, "doctor_id": 1, "shift_period": "M", "service": "TU"
         })
-        self.assertEqual(res_sun_admin.status_code, 200)
-        self.assertTrue(res_sun_admin.get_json()["success"])
+        self.assertEqual(res_admin_ok.status_code, 200)
+        self.assertTrue(res_admin_ok.get_json()["success"])
 
-        # Limpiar el domingo de prueba
+        # Limpiar
         client.post("/api/shifts/update", json={
-            "year": 2026, "month": 10, "day": 4, "doctor_id": 1, "shift_period": "CLEAR"
+            "year": 2026, "month": 10, "day": 5, "doctor_id": 1, "shift_period": "CLEAR"
         })
-        print("[OK] Test 3: Aislamiento por medico, bloqueo de domingos para medicos (habilitado para Admin) y confirmacion verificados.")
+        print("[OK] Test 3: Revocacion de ingreso directo para medicos y edicion exclusiva por Jefatura y RRHH verificada.")
 
     def test_04_auto_assign_specific_doctor_schedules_oct_and_nov(self):
         """Verifica las reglas específicas de Solano, Caldas, Laureano, Sánchez y Chunga en Octubre y Noviembre 2026."""
@@ -238,14 +226,14 @@ class TestIPRESSScheduling(unittest.TestCase):
         print(f"[OK] Test 6: Reporte oficial en Excel (.xlsx) generado correctamente ({len(stream.getvalue())} bytes).")
 
     def test_07_auto_assign_preserves_existing_doctor_proposals(self):
-        """Verifica que el corte automático respete y NO sobreescriba las propuestas previas de los médicos."""
+        """Verifica que el corte automático respete y NO sobreescriba las propuestas previas."""
         year, month = 2026, 10
         with get_connection() as conn:
             conn.execute("DELETE FROM shifts WHERE year = ? AND month = ?", (year, month))
             conn.commit()
 
-        # Dra. Caldas graba un turno usando record_doctor_shift
-        res_rec = record_doctor_shift(year, month, 7, 1, "M", "TS", user_id=1, user_name="Dra. Caldas", user_role="doctor")
+        # Jefatura o una propuesta previa registra el turno de Dra. Caldas
+        res_rec = record_doctor_shift(year, month, 7, 1, "M", "TS", user_id=6, user_name="Jefatura Médica IPRESS", user_role="admin")
         self.assertTrue(res_rec["success"])
 
         auto_assign_missing_shifts_day10(year, month)
@@ -261,7 +249,7 @@ class TestIPRESSScheduling(unittest.TestCase):
             self.assertEqual(row["service"], "TS")
             self.assertEqual(row["is_proposal"], 1)
 
-        print("[OK] Test 7: El corte automatico preservo las propuestas grabadas por los medicos.")
+        print("[OK] Test 7: El corte automatico preservo las propuestas grabadas.")
 
     def test_08_admin_reopen_schedule(self):
         """Verifica que solo el ADMIN pueda reabrir un horario previamente aprobado."""
@@ -288,55 +276,61 @@ class TestIPRESSScheduling(unittest.TestCase):
         self.assertEqual(res_ok.status_code, 200)
         print("[OK] Test 8: Funcionalidad de reapertura de horario verificada con proteccion estricta por rol ADMIN.")
 
-    def test_09_user_based_passwords_and_rrhh_role(self):
-        """Verifica que las contraseñas se basen en los usuarios y que el usuario RRHH tenga privilegios de gestión."""
+    def test_09_exclusive_login_for_jefatura_and_rrhh_and_excel_proposals(self):
+        """Verifica que el login directo esté restringido a Jefatura y RRHH y que los médicos carguen propuestas vía Excel."""
+        from openpyxl import load_workbook
+        import io
         client = flask_app.app.test_client()
 
-        # 1. Login con usuario y contraseña basada en usuario (no CMP)
-        users_to_test = [
-            ("lcaldas", "caldas2026", "doctor"),
-            ("tchunga", "chunga2026", "doctor"),
-            ("elaureano", "laureano2026", "doctor"),
-            ("csanchez", "sanchez2026", "doctor"),
-            ("esolano", "solano2026", "doctor"),
-            ("jefatura", "jefatura2026", "admin"),
-            ("rrhh", "rrhh2026", "rrhh"),
-        ]
+        # 1. Los médicos tienen revocado el permiso de inicio de sesión directo (403)
+        for uname, pwd in [("lcaldas", "caldas2026"), ("esolano", "solano2026")]:
+            res_doc_login = client.post("/api/auth/login", json={"username": uname, "password": pwd})
+            self.assertEqual(res_doc_login.status_code, 403)
+            self.assertIn("REVOCADO", res_doc_login.get_json()["error"])
 
-        for uname, pwd, expected_role in users_to_test:
+        # 2. Jefatura y RRHH SÍ pueden iniciar sesión
+        for uname, pwd, expected_role in [("jefatura", "jefatura2026", "admin"), ("rrhh", "rrhh2026", "rrhh")]:
             res = client.post("/api/auth/login", json={"username": uname, "password": pwd})
-            self.assertEqual(res.status_code, 200, f"Fallo al autenticar {uname}")
-            user_data = res.get_json()["user"]
-            self.assertEqual(user_data["username"], uname)
-            self.assertEqual(user_data["role"], expected_role)
+            self.assertEqual(res.status_code, 200)
+            self.assertEqual(res.get_json()["user"]["role"], expected_role)
 
-        # 1b. Login por selección directa de Nombre / ID en la lista desplegable + clave
-        res_by_id = client.post("/api/auth/login", json={"doctor_id": 1, "password": "caldas2026"})
-        self.assertEqual(res_by_id.status_code, 200)
-        self.assertEqual(res_by_id.get_json()["user"]["name"], "Caldas Pacsi, Lily Katherine")
+        # 3. Flujo de propuesta Excel para médicos (descarga formato en blanco -> llenado -> carga en memoria)
+        with get_connection() as conn:
+            doc1 = dict(conn.execute("SELECT id, name, condition, cmp, role FROM doctors WHERE id = 1").fetchone())
+            doc2 = dict(conn.execute("SELECT id, name, condition, cmp, role FROM doctors WHERE id = 2").fetchone())
 
-        res_by_name = client.post("/api/auth/login", json={"name": "Solano Ricaldi, Edward Jhonny", "password": "solano2026"})
-        self.assertEqual(res_by_name.status_code, 200)
-        self.assertEqual(res_by_name.get_json()["user"]["name"], "Solano Ricaldi, Edward Jhonny")
+        tpl_stream = generate_blank_proposal_template(2026, 10, doc1)
+        wb = load_workbook(tpl_stream)
+        ws = wb.active
+        # Día 5 de Octubre 2026 (fila 15 = 11 + 4) -> M-TU
+        ws.cell(row=15, column=4, value="M-TU")
+        filled_buf = io.BytesIO()
+        wb.save(filled_buf)
+        filled_bytes = filled_buf.getvalue()
 
-        # 2. Privilegios de RRHH: Puede registrar turnos de cualquier médico y en domingo
-        with client.session_transaction() as sess:
-            sess["user_id"] = 7
-            sess["user_name"] = "Responsable de Recursos Humanos"
-            sess["user_role"] = "rrhh"
+        # 3a. Si otro médico (Dra. Chunga, id=2) intenta subir el formato de Dra. Caldas (id=1) -> Rechazado (403)
+        res_other_doc = parse_and_import_doctor_proposal(filled_bytes, 2026, 10, expected_doctor_id=doc2["id"])
+        self.assertFalse(res_other_doc["success"])
+        self.assertEqual(res_other_doc["status_code"], 403)
+        self.assertIn("ACCESO DENEGADO", res_other_doc["error"])
 
-        # Día 4 de Octubre 2026 es Domingo: RRHH SÍ tiene permiso
-        res_rrhh_sun = client.post("/api/shifts/update", json={
-            "year": 2026, "month": 10, "day": 4, "doctor_id": 5, "shift_period": "M", "service": "TU"
-        })
-        self.assertEqual(res_rrhh_sun.status_code, 200)
-        self.assertTrue(res_rrhh_sun.get_json()["success"])
+        # 3b. Dra. Caldas (id=1) sube su propia propuesta -> Éxito (200), se refleja en horario y en audit_logs
+        res_own_prop = parse_and_import_doctor_proposal(filled_bytes, 2026, 10, expected_doctor_id=doc1["id"])
+        self.assertTrue(res_own_prop["success"])
+        self.assertEqual(res_own_prop["saved_days_count"], 1)
 
-        # RRHH puede reabrir el horario
-        res_reopen = client.post("/api/schedule/reopen", json={"year": 2026, "month": 10})
-        self.assertEqual(res_reopen.status_code, 200)
+        # 3c. Si Dra. Chunga (id=2) sube su propia propuesta con el mismo turno M-TU el día 5 -> se genera cruce en discrepancias
+        tpl2_stream = generate_blank_proposal_template(2026, 10, doc2)
+        wb2 = load_workbook(tpl2_stream)
+        ws2 = wb2.active
+        ws2.cell(row=15, column=4, value="M-TU")
+        filled_buf2 = io.BytesIO()
+        wb2.save(filled_buf2)
+        res_prop2 = parse_and_import_doctor_proposal(filled_buf2.getvalue(), 2026, 10, expected_doctor_id=doc2["id"])
+        self.assertTrue(res_prop2["success"])
+        self.assertGreaterEqual(res_prop2["discrepancies_detected"], 1)
 
-        print("[OK] Test 9: Claves basadas en usuarios y nuevo usuario 'Responsable de Recursos Humanos' (RRHH) verificados con éxito.")
+        print("[OK] Test 9: Login exclusivo para Jefatura/RRHH y flujo de propuestas Excel en memoria con deteccion de cruces verificados.")
 
     def test_10_audit_log_3_months_retention(self):
         """Verifica que el log de cambios almacene hasta 3 meses (90 días) y purgue registros más antiguos."""

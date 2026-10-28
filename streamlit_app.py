@@ -31,7 +31,41 @@ from scheduler_engine import (
     revoke_day_approval,
     SERVICE_LABELS
 )
-from exporter import generate_excel_schedule
+from exporter import (
+    generate_excel_schedule,
+    generate_blank_proposal_template,
+    parse_and_import_doctor_proposal
+)
+
+# Componente interactivo de matriz mensual (permite hacer clic en una fecha o celda para abrir pop-up)
+interactive_matrix_component = st.components.v2.component(
+    "ipress_interactive_matrix",
+    html="<div id='matrix-root'></div>",
+    js="""
+    export default function(component) {
+        const { data, setTriggerValue, parentElement } = component;
+        const root = parentElement.querySelector('#matrix-root');
+        if (!root) return;
+        root.innerHTML = data.html || '';
+        if (data.is_editable) {
+            const clickableCells = root.querySelectorAll('[data-clickable="1"]');
+            clickableCells.forEach(el => {
+                el.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const day = parseInt(el.getAttribute('data-day'), 10);
+                    const docIdAttr = el.getAttribute('data-doc-id');
+                    const docId = docIdAttr ? parseInt(docIdAttr, 10) : null;
+                    setTriggerValue('cell_clicked', {
+                        day: day,
+                        doc_id: docId,
+                        ts: Date.now()
+                    });
+                });
+            });
+        }
+    }
+    """
+)
 
 # Inicializar Base de Datos
 init_db()
@@ -132,9 +166,14 @@ def get_all_doctors():
 
 doctors_list = [dict(d) for d in get_all_doctors()]
 doctors_only = [d for d in doctors_list if d["role"] == "doctor"]
+managers_only = [d for d in doctors_list if d["role"] in ("admin", "rrhh")]
+
+# Si en sesión había un médico con rol 'doctor', revocar la sesión
+if st.session_state["user"] is not None and st.session_state["user"].get("role") not in ("admin", "rrhh"):
+    st.session_state["user"] = None
 
 # -------------------------------------------------------------------
-# SIDEBAR: AUTENTICACIÓN Y FILTROS
+# SIDEBAR: AUTENTICACIÓN (EXCLUSIVO JEFATURA Y RRHH) Y FILTROS
 # -------------------------------------------------------------------
 with st.sidebar:
     st.title("🏥 IPRESS Salud")
@@ -152,22 +191,23 @@ with st.sidebar:
         selected_month = st.selectbox("Mes", list(meses_nombres.keys()), index=9, format_func=lambda x: meses_nombres[x])
 
     st.markdown("---")
-    st.subheader("🔐 Acceso al Sistema")
+    st.subheader("🔐 Acceso Jefatura y RRHH")
+    st.caption("Los permisos de ingreso directo al sistema están habilitados únicamente para **Jefatura Médica** y **RRHH**.")
 
     if st.session_state["user"] is None:
-        doc_map = {
-            d["id"]: f"{d['name']} ({'JEFATURA' if d['role']=='admin' else ('RRHH' if d['role']=='rrhh' else d['condition'])})"
-            for d in doctors_list
+        mgr_map = {
+            d["id"]: f"{d['name']} ({'JEFATURA' if d['role']=='admin' else 'RRHH'})"
+            for d in managers_only
         }
         
         sel_doc_id = st.selectbox(
-            "Selecciona tu Nombre:",
-            list(doc_map.keys()),
-            format_func=lambda did: doc_map[did]
+            "Perfil de Gestión:",
+            list(mgr_map.keys()),
+            format_func=lambda did: mgr_map[did]
         )
         input_pwd = st.text_input("Ingresa tu Clave de acceso:", type="password")
 
-        if st.button("Iniciar Sesión", use_container_width=True, type="primary"):
+        if st.button("Iniciar Sesión (Jefatura / RRHH)", use_container_width=True, type="primary"):
             if not input_pwd:
                 st.error("Debes ingresar tu clave.")
             else:
@@ -175,14 +215,14 @@ with st.sidebar:
                     doc_db = conn.execute("""
                         SELECT id, name, condition, cmp, username, pin_hash, role
                         FROM doctors
-                        WHERE id = ? AND is_active = 1
+                        WHERE id = ? AND is_active = 1 AND role IN ('admin', 'rrhh')
                     """, (sel_doc_id,)).fetchone()
                     if doc_db and doc_db["pin_hash"] == hash_pin(input_pwd):
                         st.session_state["user"] = dict(doc_db)
                         log_audit(doc_db["id"], doc_db["name"], "Inicio de Sesión", f"Acceso correcto de {doc_db['name']}")
                         st.rerun()
                     else:
-                        st.error("Clave incorrecta.")
+                        st.error("Clave incorrecta o perfil no autorizado.")
     else:
         u = st.session_state["user"]
         st.success(f"**{u['name']}**")
@@ -244,70 +284,78 @@ is_admin_or_rrhh = (st.session_state["user"] is not None and st.session_state["u
 is_admin_user = is_admin_or_rrhh
 
 # -------------------------------------------------------------------
-# VENTANA MODAL DE GRABACIÓN DE TURNO (@st.dialog)
-# Al grabar se cierra automáticamente y envía confirmación
+# VENTANA POP-UP AL HACER CLIC EN UNA FECHA / CELDA (@st.dialog)
+# Exclusiva para Jefatura Médica y RRHH: pregunta si desea modificar,
+# solicita confirmación del deseo de modificación y graba el cambio.
 # -------------------------------------------------------------------
-@st.dialog("🗓️ Ventana de Grabación de Turno Asistencial", width="large")
-def open_shift_recording_modal(default_day: int = None):
+@st.dialog("🗓️ Confirmación de Modificación de Horario (Jefatura / RRHH)", width="large")
+def open_shift_recording_modal(default_day: int = None, default_doc_id: int = None):
     u = st.session_state["user"]
-    is_admin = (u.get("role") in ("admin", "rrhh"))
+    if not u or u.get("role") not in ("admin", "rrhh"):
+        st.error("🔒 Acceso denegado: Únicamente Jefatura Médica y RRHH pueden modificar el horario.")
+        return
 
-    if is_admin:
-        role_label = "Jefatura Médica" if u.get("role") == "admin" else "Recursos Humanos"
-        st.markdown(f"**👑 Modo de Gestión Institucional ({role_label}):** Puedes registrar o modificar el turno de cualquier médico cirujano (incluidos los domingos).")
+    role_label = "Jefatura Médica" if u.get("role") == "admin" else "Recursos Humanos"
+    doc_ids_list = [doc["id"] for doc in doctors_only]
+    idx_doc_default = doc_ids_list.index(default_doc_id) if (default_doc_id in doc_ids_list) else 0
+
+    selectable_days = [d["day"] for d in days]
+    idx_day_default = selectable_days.index(default_day) if (default_day in selectable_days) else 0
+
+    day_obj = days[selectable_days[idx_day_default] - 1]
+    st.warning(
+        f"❓ **¿Desea modificar la programación asistencial correspondiente a la fecha "
+        f"Día {day_obj['day']:02d}/{selected_month:02d}/{selected_year} ({day_obj['weekday_name']})?**"
+    )
+    st.caption(f"Sesión activa: **{u['name']}** ({role_label}) — Seleccione el médico, el nuevo turno y confirme su deseo de modificación para grabar el cambio.")
+
+    c_sel_doc, c_sel_day = st.columns(2)
+    with c_sel_doc:
         target_doc_id = st.selectbox(
-            "1. Seleccionar Médico Cirujano:",
-            [doc["id"] for doc in doctors_only],
+            "1. Médico Cirujano:",
+            doc_ids_list,
+            index=idx_doc_default,
             format_func=lambda did: next((f"{d['name']} ({d['condition']} - CMP: {d['cmp']})" for d in doctors_only if d["id"] == did), str(did)),
             key="dlg_admin_doc"
         )
-        target_doc = next((d for d in doctors_only if d["id"] == target_doc_id), doctors_only[0])
-        target_id = target_doc["id"]
-        target_name = target_doc["name"]
-        selectable_days = [d["day"] for d in days]
-    else:
-        st.markdown(f"**👨‍⚕️ Médico Cirujano:** `{u['name']}` (CMP: `{u['cmp']}`)")
-        st.caption("🔒 Los domingos están bloqueados para los médicos. Solo puedes modificar tu propia programación.")
-        target_id = u["id"]
-        target_name = u["name"]
-        # Bloquear domingos para los médicos
-        selectable_days = [d["day"] for d in days if not d["is_sunday"]]
+    with c_sel_day:
+        edit_day = st.selectbox(
+            f"2. Fecha ({month_info['month_name']} {selected_year}):",
+            selectable_days,
+            index=idx_day_default,
+            format_func=lambda d_num: (
+                f"Día {d_num:02d} — {days[d_num - 1]['weekday_name']}"
+                f"{' (FERIADO: ' + days[d_num - 1]['holiday_name'] + ')' if days[d_num - 1]['is_holiday'] else ''}"
+                f"{' [DOMINGO]' if days[d_num - 1]['is_sunday'] else ''}"
+            ),
+            key="dlg_day_select"
+        )
 
-    idx_default = selectable_days.index(default_day) if (default_day in selectable_days) else 0
-    edit_day = st.selectbox(
-        f"2. Seleccionar Fecha ({month_info['month_name']} {selected_year}):",
-        selectable_days,
-        index=idx_default,
-        format_func=lambda d_num: (
-            f"Día {d_num:02d} — {days[d_num - 1]['weekday_name']}"
-            f"{' (FERIADO: ' + days[d_num - 1]['holiday_name'] + ')' if days[d_num - 1]['is_holiday'] else ''}"
-            f"{' [DOMINGO - Solo Jefatura/RRHH]' if days[d_num - 1]['is_sunday'] else ''}"
-        ),
-        key="dlg_day_select"
-    )
+    target_doc = next((d for d in doctors_only if d["id"] == target_doc_id), doctors_only[0])
+    target_id = target_doc["id"]
 
     cur_shift = doc_summary.get(target_id, {}).get("days", {}).get(edit_day)
-    if cur_shift:
-        st.info(f"📌 Turno actualmente grabado en el Día {edit_day:02d}: **{cur_shift['shift_period']} ({cur_shift['service']})**")
+    if cur_shift and cur_shift.get("shift_period") != "LIBRE":
+        st.info(f"📌 Turno actualmente registrado para **{target_doc['name']}** el Día {edit_day:02d}: **{cur_shift['shift_period']} ({cur_shift['service']})**")
     else:
-        st.caption(f"📌 El Día {edit_day:02d} se encuentra actualmente sin turno asignado para este médico.")
+        st.info(f"📌 Actualmente **{target_doc['name']}** figura como **Libre** el Día {edit_day:02d}.")
 
     col_p, col_s = st.columns([1.2, 1.8])
     with col_p:
         period_choice = st.radio(
-            "3. Período / Jornada:",
+            "3. Nuevo Período / Jornada:",
             [
-                "Mañana (6h)",
-                "Tarde (6h)",
-                "12 Horas (Mañana + Tarde)",
-                "Descanso de Guardia (DES)",
-                "Dejar Libre (Borrar Turno)"
+                "Mañana (6h - Amarillo)",
+                "Tarde (6h - Verde)",
+                "12 Horas (Mañana + Tarde - Celeste)",
+                "Descanso de Guardia (DES - Violeta)",
+                "Día Libre (Libre - Violeta)"
             ],
             key="dlg_period_radio"
         )
 
     with col_s:
-        if "Mañana (6h)" in period_choice:
+        if "Mañana (6h" in period_choice:
             service_choice = st.radio(
                 "4. Servicio Asistencial (Mañana):",
                 [
@@ -319,7 +367,7 @@ def open_shift_recording_modal(default_day: int = None):
             )
             sp_val = "M"
             srv_val = "TU" if "(TU)" in service_choice else ("CE" if "(CE)" in service_choice else "TS")
-        elif "Tarde (6h)" in period_choice:
+        elif "Tarde (6h" in period_choice:
             service_choice = st.radio(
                 "4. Servicio Asistencial (Tarde):",
                 [
@@ -348,23 +396,29 @@ def open_shift_recording_modal(default_day: int = None):
                 if f"({code})" in service_choice:
                     srv_val = code
                     break
-            st.caption("ℹ️ Al grabar un turno de 12 horas, el día siguiente quedará automáticamente con descanso de guardia (`DES`).")
+            st.caption("ℹ️ Al grabar un turno de 12 horas, el día siguiente sin turno recibirá descanso (`DES`).")
         elif "DES" in period_choice:
-            st.info("Descanso obligatorio de guardia (posterior a turno de 12 horas).")
+            st.info("Descanso obligatorio de guardia (`DES` - Violeta).")
             sp_val = "DES"
             srv_val = "DES"
         else:
-            st.warning("Se liberará el turno asignado en esta fecha.")
+            st.warning("La fecha quedará asignada como **Libre** (Violeta).")
             sp_val = "CLEAR"
             srv_val = ""
 
     st.markdown("---")
+    confirm_mod = st.checkbox(
+        f"✅ Confirmo que deseo modificar el horario de {target_doc['name']} en la fecha Día {edit_day:02d}/{selected_month:02d}/{selected_year}.",
+        value=False,
+        key="dlg_confirm_chk"
+    )
+
     b_cancel, b_save = st.columns([1, 2])
     with b_cancel:
         if st.button("Cancelar", use_container_width=True):
             st.rerun()
     with b_save:
-        if st.button("💾 Grabar Turno y Cerrar Ventana", type="primary", use_container_width=True):
+        if st.button("💾 Confirmar y Grabar Cambio", type="primary", use_container_width=True, disabled=not confirm_mod):
             res = record_doctor_shift(
                 year=selected_year,
                 month=selected_month,
@@ -453,17 +507,59 @@ with kpi5:
 st.markdown("---")
 
 # -------------------------------------------------------------------
-# BARRA DE ACCIONES PRINCIPALES
+# SECCIÓN DE PROPUESTA DE HORARIO PARA MÉDICOS (FORMATO EXCEL EN BLANCO + SUBIDA EN MEMORIA)
 # -------------------------------------------------------------------
-b_col0, b_col1, b_col2 = st.columns([2.5, 2.5, 2])
+with st.expander("📄 Propuesta de Horario para Médicos Cirujanos (Descargar Formato en Blanco / Subir Propuesta)", expanded=not is_admin_or_rrhh):
+    st.markdown(
+        "**Normativa vigente:** Los médicos cirujanos ya no tienen permiso de ingreso directo. "
+        "Para registrar su propuesta mensual de turnos deben **descargar su formato en blanco personalizado (`.xlsx`)** "
+        "y luego **subir el archivo con su propuesta**. Un médico **solo puede presentar la propuesta que le corresponde a él** "
+        "(no puede proponer el horario de otro médico). Una vez procesada en pantalla y en el log de cambios, **el archivo no se guarda en el servidor**."
+    )
+    prop_col1, prop_col2 = st.columns([1.3, 1.7])
+    with prop_col1:
+        prop_doc_id = st.selectbox(
+            "1. Seleccione su Nombre (Médico Titular):",
+            [d["id"] for d in doctors_only],
+            format_func=lambda did: next((f"{d['name']} (CMP: {d['cmp']} - {d['condition']})" for d in doctors_only if d["id"] == did), str(did)),
+            key="prop_doc_select"
+        )
+        prop_doc_obj = next(d for d in doctors_only if d["id"] == prop_doc_id)
+        blank_template_stream = generate_blank_proposal_template(selected_year, selected_month, prop_doc_obj, "IPRESS SALUD PERÚ")
+        safe_surname = prop_doc_obj["name"].split(",")[0].strip().replace(" ", "_")
+        st.download_button(
+            label=f"📥 2. Descargar Formato en Blanco ({prop_doc_obj['name'].split(',')[0]})",
+            data=blank_template_stream.getvalue(),
+            file_name=f"Formato_Propuesta_{safe_surname}_{selected_month:02d}_{selected_year}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            type="secondary"
+        )
+    with prop_col2:
+        uploaded_prop_file = st.file_uploader(
+            f"📤 3. Subir archivo Excel (.xlsx) con la propuesta de {prop_doc_obj['name']}:",
+            type=["xlsx"],
+            key=f"prop_uploader_{selected_year}_{selected_month}_{prop_doc_id}"
+        )
+        if uploaded_prop_file is not None:
+            if st.button("✅ Procesar y Reflejar Mi Propuesta en el Horario", type="primary", use_container_width=True):
+                file_bytes = uploaded_prop_file.getvalue()
+                res_imp = parse_and_import_doctor_proposal(
+                    file_bytes=file_bytes,
+                    expected_year=selected_year,
+                    expected_month=selected_month,
+                    expected_doctor_id=prop_doc_id
+                )
+                if res_imp["success"]:
+                    st.session_state["shift_saved_confirmation"] = res_imp["message"]
+                    st.rerun()
+                else:
+                    st.error(res_imp["error"])
 
-with b_col0:
-    if st.session_state["user"] is not None:
-        btn_open_txt = "➕ Grabar / Modificar Turno (Jefatura/RRHH)" if is_admin_or_rrhh else "➕ Grabar / Modificar Mi Turno"
-        if st.button(btn_open_txt, use_container_width=True, type="primary"):
-            open_shift_recording_modal()
-    else:
-        st.button("🔒 Inicia Sesión para Grabar Turnos", use_container_width=True, disabled=True)
+# -------------------------------------------------------------------
+# BARRA DE ACCIONES INSTITUCIONALES (SIN BOTÓN DE GRABAR TURNO; SE EDITA HACIENDO CLIC EN LA FECHA/CELDA)
+# -------------------------------------------------------------------
+b_col1, b_col2 = st.columns([2.5, 2.5])
 
 with b_col1:
     if approval_status.get("is_approved"):
@@ -489,7 +585,7 @@ with b_col1:
 with b_col2:
     excel_stream = generate_excel_schedule(selected_year, selected_month, "IPRESS SALUD PERÚ")
     st.download_button(
-        label="📥 Descargar Rol en Excel (.xlsx)",
+        label="📥 Descargar Rol Consolidado en Excel (.xlsx)",
         data=excel_stream.getvalue(),
         file_name=f"Rol_Turnos_IPRESS_{selected_year}_{selected_month:02d}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -497,49 +593,115 @@ with b_col2:
     )
 
 # -------------------------------------------------------------------
-# MATRIZ VISUAL DEL ROL MENSUAL (VISIBLE PARA TODOS)
+# MATRIZ VISUAL DEL ROL MENSUAL (INTERACTIVA AL HACER CLIC EN FECHA/CELDA PARA JEFATURA Y RRHH)
 # -------------------------------------------------------------------
 st.subheader("🗓️ Matriz Mensual de Turnos Asistenciales (Tiempo Real)")
-st.caption(
-    "**Servicios Mañana:** `TU` (Tópico de Urgencias), `CE` (Consultorio de Medicina), `TS` (Telesalud/TBC/MCI) | "
-    "**Servicios Tarde:** `TU` (Tópico de Urgencias), `CE` (Consultorio de Medicina) | "
-    "**Domingos (`🔒`):** Bloqueados para médicos, editables solo por el Administrador."
-)
+if is_admin_or_rrhh:
+    st.info(
+        "👆 **Modo Interactivo Activo (Jefatura / RRHH):** Haga **clic directamente sobre cualquier número de fecha o celda del horario** "
+        "para abrir la ventana emergente (pop-up), confirmar si desea modificar ese turno y grabar el cambio."
+    )
+else:
+    st.caption(
+        "**Servicios Mañana:** `TU` (Tópico de Urgencias), `CE` (Consultorio de Medicina), `TS` (Telesalud/TBC/MCI) | "
+        "**Servicios Tarde:** `TU` (Tópico de Urgencias), `CE` (Consultorio de Medicina) | "
+        "**Modificación y Aprobación:** Exclusiva para Jefatura Médica y RRHH haciendo clic sobre la fecha."
+    )
 
 curr_uid = st.session_state["user"]["id"] if st.session_state["user"] else None
 
-html = ["<div style='overflow-x: auto;'><table class='table-matrix'>"]
+matrix_styles = """
+<style>
+    .table-matrix {
+        width: 100%;
+        border-collapse: collapse;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        font-size: 11.5px;
+        text-align: center;
+    }
+    .table-matrix th, .table-matrix td {
+        border: 1px solid #cbd5e1;
+        padding: 4px 2px;
+        min-width: 34px;
+    }
+    .table-matrix th {
+        background-color: #1e293b;
+        color: white;
+    }
+    .table-matrix th:first-child, .table-matrix td:first-child {
+        position: sticky;
+        left: 0;
+        background-color: #f8fafc;
+        z-index: 2;
+        box-shadow: 2px 0 4px -2px rgba(0,0,0,0.15);
+    }
+    .table-matrix tr:first-child th:first-child, .table-matrix tr:nth-child(2) th:first-child {
+        background-color: #1e293b;
+        color: white;
+        z-index: 3;
+    }
+    .badge-shift {
+        display: inline-block;
+        padding: 2px 5px;
+        border-radius: 6px;
+        font-size: 10.5px;
+        font-weight: bold;
+        text-align: center;
+        margin: 1px;
+        line-height: 1.15;
+    }
+    .badge-12h { background-color: #bae6fd; color: #0369a1; border: 1px solid #7dd3fc; }
+    .badge-DES { background-color: #ede9fe; color: #5b21b6; border: 1px solid #c4b5fd; font-style: italic; }
+    .badge-LIBRE { background-color: #f5f3ff; color: #6b21a8; border: 1px solid #ddd6fe; font-weight: 600; }
+    .badge-M-TU, .badge-M-CE, .badge-M-TS { background-color: #fef08a; color: #713f12; border: 1px solid #facc15; }
+    .badge-T-TU, .badge-T-CE { background-color: #bbf7d0; color: #14532d; border: 1px solid #86efac; }
+    .col-sun { background-color: #e2e8f0; color: #64748b; }
+    .col-sat { background-color: #f8fafc; }
+    .col-hol { background-color: #ffe4e6; }
+    .cov-ok { background-color: #dcfce7; color: #166534; font-weight: bold; font-size: 10px; }
+    .cov-adm { background-color: #fef9c3; color: #854d0e; font-weight: bold; font-size: 10px; }
+    .cov-err { background-color: #fee2e2; color: #991b1b; font-weight: bold; font-size: 10px; }
+    [data-clickable="1"] {
+        cursor: pointer;
+        transition: transform 0.1s ease, box-shadow 0.1s ease;
+    }
+    [data-clickable="1"]:hover {
+        outline: 2px solid #2563eb;
+        background-color: #eff6ff !important;
+    }
+</style>
+"""
 
-# Cabecera Fila 1: Días
+html = [matrix_styles, "<div style='overflow-x: auto;'><table class='table-matrix'>"]
+
+# Cabecera Fila 1: Días (clicables para Jefatura/RRHH)
 html.append("<tr>")
 html.append("<th style='text-align:left; min-width:210px;'>MÉDICO CIRUJANO</th><th>COND.</th><th>CMP</th>")
 for d in days:
     cls = "col-hol" if d["is_holiday"] else ("col-sun" if d["is_sunday"] else "")
     sun_lock = " 🔒" if d["is_sunday"] and not is_admin_user else ""
     hol_tag = "<br><small style='color:#fca5a5;'>FER</small>" if d["is_holiday"] else ""
-    html.append(f"<th class='{cls}'>{d['day']}{sun_lock}{hol_tag}</th>")
+    click_attr = f"data-clickable='1' data-day='{d['day']}' title='Clic para modificar turnos del Día {d['day']}'" if is_admin_or_rrhh else ""
+    html.append(f"<th class='{cls}' {click_attr}>{d['day']}{sun_lock}{hol_tag}</th>")
 html.append("<th>6h</th><th>12h</th><th>DES</th><th>TOTAL</th><th>META</th><th>ESTADO</th>")
 html.append("</tr>")
 
 # Cabecera Fila 2: Días de semana
 html.append("<tr>")
-html.append("<th colspan='3' style='text-align:left; font-weight:normal; font-size:10px; background-color:#334155;'>Días de la semana (Domingos bloqueados para médicos)</th>")
+html.append("<th colspan='3' style='text-align:left; font-weight:normal; font-size:10px; background-color:#334155;'>Días de la semana (Clic en fecha/celda para modificar — Jefatura/RRHH)</th>")
 for d in days:
     cls = "col-sun" if d["is_sunday"] else ("col-sat" if d["is_saturday"] else "")
-    html.append(f"<th class='{cls}' style='font-size:10px; background-color:#334155; color:white;'>{d['weekday_short']}</th>")
+    click_attr = f"data-clickable='1' data-day='{d['day']}'" if is_admin_or_rrhh else ""
+    html.append(f"<th class='{cls}' {click_attr} style='font-size:10px; background-color:#334155; color:white;'>{d['weekday_short']}</th>")
 for _ in range(6):
     html.append("<th style='background-color:#334155;'></th>")
 html.append("</tr>")
 
 # Filas de Médicos
 for doc in doctors_only:
-    is_my_row = (curr_uid == doc["id"])
-    row_cls = "row-active" if is_my_row else ""
     d_sum = doc_summary.get(doc["id"], {"total_equivalent_shifts": 0, "count_6h": 0, "count_12h": 0, "count_des": 0, "days": {}})
-    
-    my_badge = '<span style="background:#2563eb; color:white; font-size:9px; padding:1px 4px; border-radius:4px;">MI PERFIL</span>' if is_my_row else ''
-    html.append(f"<tr class='{row_cls}'>")
-    html.append(f"<td style='text-align:left; padding-left:8px;'>{doc['name']} {my_badge}</td>")
+    html.append("<tr>")
+    html.append(f"<td style='text-align:left; padding-left:8px; font-weight:600;'>{doc['name']}</td>")
     html.append(f"<td><small>{doc['condition']}</small></td>")
     html.append(f"<td><small>{doc['cmp']}</small></td>")
 
@@ -561,7 +723,11 @@ for doc in doctors_only:
         else:
             b_html = "<span class='badge-shift badge-LIBRE'>Libre</span>"
 
-        html.append(f"<td class='{cell_cls}'>{b_html}</td>")
+        click_attr = (
+            f"data-clickable='1' data-day='{d['day']}' data-doc-id='{doc['id']}' "
+            f"title='Clic para modificar turno de {doc['name']} el Día {d['day']}'"
+        ) if is_admin_or_rrhh else ""
+        html.append(f"<td class='{cell_cls}' {click_attr}>{b_html}</td>")
 
     # Totales
     is_comp = d_sum["total_equivalent_shifts"] == quota
@@ -619,7 +785,17 @@ for _ in range(6):
 html.append("</tr>")
 
 html.append("</table></div>")
-st.markdown("".join(html), unsafe_allow_html=True)
+
+matrix_event = interactive_matrix_component(
+    data={"html": "".join(html), "is_editable": bool(is_admin_or_rrhh)},
+    key=f"matrix_comp_{selected_year}_{selected_month}_{is_admin_or_rrhh}"
+)
+
+if is_admin_or_rrhh and matrix_event and getattr(matrix_event, "cell_clicked", None):
+    clicked_info = matrix_event.cell_clicked
+    clicked_day = clicked_info.get("day")
+    clicked_doc_id = clicked_info.get("doc_id")
+    open_shift_recording_modal(default_day=clicked_day, default_doc_id=clicked_doc_id)
 
 # -------------------------------------------------------------------
 # -------------------------------------------------------------------
@@ -669,20 +845,30 @@ if len(service_alert_days) > 0:
                         st.caption("🔒 Solo Jefatura Médica o RRHH pueden aprobar este día")
 
 # -------------------------------------------------------------------
-# CENTRO DE DISCREPANCIAS POR COLISIÓN DE PUESTO (SI EXISTEN)
+# CENTRO DE DISCREPANCIAS POR CRUCES DE PROPUESTAS (SIEMPRE VISIBLE)
+# Solo Jefatura y RRHH pueden aprobar o modificar
 # -------------------------------------------------------------------
-if len(open_discs) > 0:
-    with st.expander("⚠️ Discrepancias por Colisión de Servicio entre Médicos", expanded=True):
+with st.expander(f"⚠️ Discrepancias por Cruces de Propuestas ({len(open_discs)} cruces activos)", expanded=(len(open_discs) > 0)):
+    st.caption(
+        "Si en las propuestas recibidas se observan cruces de servicio en el mismo turno, se muestran aquí. "
+        "**Únicamente Jefatura Médica y RRHH pueden aprobar o modificar las propuestas.**"
+    )
+    if len(open_discs) == 0:
+        st.success("✅ Actualmente no se registran cruces de servicios entre las propuestas cargadas.")
+    else:
         for disc in open_discs:
             st.markdown(f"**Día {disc['day']} ({disc['shift_period']})**: {disc['description']}")
             c_desc, c_btn = st.columns([3, 1])
             with c_desc:
                 st.info("💡 Alternativa Sugerida: Reasignar al servicio complementario libre.")
             with c_btn:
-                if st.button("Aceptar Sugerencia", key=f"btn_disc_{disc['id']}"):
-                    if apply_discrepancy_alternative(disc["id"]):
-                        st.session_state["shift_saved_confirmation"] = "Discrepancia resuelta y turno grabado."
-                        st.rerun()
+                if is_admin_or_rrhh:
+                    if st.button("✅ Aprobar Sugerencia", key=f"btn_disc_{disc['id']}", type="primary"):
+                        if apply_discrepancy_alternative(disc["id"]):
+                            st.session_state["shift_saved_confirmation"] = "Cruce subsanado por Jefatura/RRHH y turno grabado."
+                            st.rerun()
+                else:
+                    st.caption("🔒 Solo Jefatura o RRHH pueden aprobar o modificar este cruce.")
 
 # -------------------------------------------------------------------
 # RESUMEN DE REGLAS VIGENTES DE LOS MÉDICOS

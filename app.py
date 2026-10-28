@@ -24,7 +24,11 @@ from scheduler_engine import (
     approve_day_discrepancy,
     approve_all_day_discrepancies
 )
-from exporter import generate_excel_schedule
+from exporter import (
+    generate_excel_schedule,
+    generate_blank_proposal_template,
+    parse_and_import_doctor_proposal
+)
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "ipress-salud-peru-secret-key-2026")
@@ -108,6 +112,16 @@ def auth_login():
 
         if not doc:
             return jsonify({"success": False, "error": "Personal no encontrado."}), 401
+
+        if doc["role"] not in ("admin", "rrhh"):
+            return jsonify({
+                "success": False,
+                "error": (
+                    "ACCESO REVOCADO PARA MÉDICOS: El ingreso directo al sistema está habilitado únicamente para "
+                    "Jefatura Médica y Recursos Humanos (RRHH). Los médicos deben descargar su formato en blanco "
+                    "y subir su propuesta de horario en Excel."
+                )
+            }), 403
         
         if doc["pin_hash"] != hash_pin(password):
             return jsonify({"success": False, "error": "Clave incorrecta."}), 401
@@ -295,12 +309,17 @@ def api_update_shift():
     return jsonify({"success": True, "message": res["message"]})
 
 # -------------------------------------------------------------
-# RUTAS DE RESOLUCIÓN DE DISCREPANCIAS
+# RUTAS DE RESOLUCIÓN DE DISCREPANCIAS (SOLO JEFATURA Y RRHH)
 # -------------------------------------------------------------
 
 @app.route("/api/discrepancies/accept-suggestion", methods=["POST"])
 def api_accept_suggestion():
-    """Aplica la sugerencia alternativa del sistema con 1 clic."""
+    """Aplica la sugerencia alternativa del sistema con 1 clic (Exclusivo Jefatura y RRHH)."""
+    if session.get("user_role") not in ("admin", "rrhh"):
+        return jsonify({
+            "success": False,
+            "error": "ACCESO DENEGADO: Únicamente Jefatura Médica y RRHH pueden aprobar o modificar discrepancias."
+        }), 403
     data = request.json or {}
     disc_id = int(data.get("discrepancy_id"))
     success = apply_discrepancy_alternative(disc_id)
@@ -311,9 +330,13 @@ def api_accept_suggestion():
 @app.route("/api/discrepancies/resolve-custom", methods=["POST"])
 def api_resolve_custom():
     """
-    Subsanación acordada bilateralmente dentro del plazo de 72 horas:
-    Ambos médicos ingresan sus modificaciones (fecha, turno y servicio).
+    Subsanación de discrepancia aprobada por Jefatura o RRHH.
     """
+    if session.get("user_role") not in ("admin", "rrhh"):
+        return jsonify({
+            "success": False,
+            "error": "ACCESO DENEGADO: Únicamente Jefatura Médica y RRHH pueden aprobar o modificar discrepancias."
+        }), 403
     data = request.json or {}
     disc_id = int(data.get("discrepancy_id"))
     year = int(data.get("year"))
@@ -389,7 +412,12 @@ def api_auto_assign_day10():
 
 @app.route("/api/schedule/validate-approval", methods=["POST"])
 def api_validate_approval():
-    """Verifica si el horario está listo para la emisión de 'Horario Aprobado'."""
+    """Verifica si el horario está listo para la emisión de 'Horario Aprobado' (Exclusivo Jefatura y RRHH)."""
+    if session.get("user_role") not in ("admin", "rrhh"):
+        return jsonify({
+            "is_approved": False,
+            "reason": "ACCESO DENEGADO: Únicamente Jefatura Médica y RRHH pueden aprobar el horario."
+        }), 403
     data = request.json or {}
     year = int(data.get("year"))
     month = int(data.get("month"))
@@ -428,15 +456,7 @@ def api_approve_day_discrepancy():
 @app.route("/api/audit-logs", methods=["GET"])
 def api_get_audit_logs():
     """Retorna los registros de auditoría de los últimos 3 meses (90 días) con filtros opcionales."""
-    curr_role = session.get("user_role")
-    if not session.get("user_id"):
-        return jsonify({"success": False, "error": "Debe iniciar sesión para ver el log de auditoría."}), 401
-
-    if curr_role not in ("admin", "rrhh"):
-        filter_user = session.get("user_name")
-    else:
-        filter_user = request.args.get("user")
-
+    filter_user = request.args.get("user")
     filter_action = request.args.get("action")
     limit = int(request.args.get("limit", 500))
     logs = get_audit_logs(limit=limit, filter_user=filter_user, filter_action=filter_action)
@@ -448,8 +468,71 @@ def api_get_audit_logs():
     })
 
 # -------------------------------------------------------------
-# EXPORTACIÓN A EXCEL (.xlsx)
+# EXPORTACIÓN A EXCEL (.xlsx) Y PROPUESTAS DE MÉDICOS EN EXCEL
 # -------------------------------------------------------------
+
+@app.route("/api/proposals/template", methods=["GET"])
+def api_download_proposal_template():
+    """Descarga el formato Excel (.xlsx) en blanco personalizado para un médico cirujano."""
+    year = int(request.args.get("year", datetime.now().year))
+    month = int(request.args.get("month", datetime.now().month))
+    doctor_id = int(request.args.get("doctor_id", 0))
+
+    if not doctor_id:
+        return jsonify({"success": False, "error": "Debe seleccionar un médico cirujano."}), 400
+
+    with get_connection() as conn:
+        doc = conn.execute(
+            "SELECT id, name, condition, cmp, role FROM doctors WHERE id = ? AND is_active = 1 AND role = 'doctor'",
+            (doctor_id,)
+        ).fetchone()
+        if not doc:
+            return jsonify({"success": False, "error": "Médico no encontrado."}), 404
+        doc_dict = dict(doc)
+
+    excel_stream = generate_blank_proposal_template(year, month, doc_dict, "IPRESS SALUD PERÚ")
+    safe_surname = doc_dict["name"].split(",")[0].strip().replace(" ", "_")
+    filename = f"Formato_Propuesta_{safe_surname}_{month:02d}_{year}.xlsx"
+
+    return send_file(
+        excel_stream,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True,
+        download_name=filename
+    )
+
+@app.route("/api/proposals/upload", methods=["POST"])
+def api_upload_proposal():
+    """
+    Recibe el archivo Excel (.xlsx) con la propuesta de un médico, lo procesa exclusivamente en memoria
+    (sin guardar el archivo en disco), valida que solo corresponda al médico titular, actualiza el horario
+    en pantalla, detecta cruces en la sección de discrepancias y lo registra en el log de cambios.
+    """
+    year = int(request.form.get("year", datetime.now().year))
+    month = int(request.form.get("month", datetime.now().month))
+    doctor_id = int(request.form.get("doctor_id", 0))
+
+    if not doctor_id:
+        return jsonify({"success": False, "error": "Debe seleccionar su nombre de médico titular."}), 400
+
+    if "file" not in request.files:
+        return jsonify({"success": False, "error": "Debe adjuntar su archivo Excel (.xlsx) de propuesta."}), 400
+
+    uploaded_file = request.files["file"]
+    if not uploaded_file or not uploaded_file.filename:
+        return jsonify({"success": False, "error": "Archivo vacío o no seleccionado."}), 400
+
+    file_bytes = uploaded_file.read()
+    res = parse_and_import_doctor_proposal(
+        file_bytes=file_bytes,
+        expected_year=year,
+        expected_month=month,
+        expected_doctor_id=doctor_id
+    )
+    if not res["success"]:
+        return jsonify({"success": False, "error": res["error"]}), res.get("status_code", 400)
+
+    return jsonify(res), 200
 
 @app.route("/api/export-excel", methods=["GET"])
 def api_export_excel():
