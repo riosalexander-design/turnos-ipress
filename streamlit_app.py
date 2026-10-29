@@ -214,7 +214,7 @@ with st.sidebar:
             list(mgr_map.keys()),
             format_func=lambda did: mgr_map[did]
         )
-        input_pwd = st.text_input("Ingresa tu Clave de acceso:", type="password")
+        input_pwd = st.text_input("Ingresa tu Clave de acceso:", type="password").strip()
 
         if st.button("Iniciar Sesión (Jefatura / RRHH)", use_container_width=True, type="primary"):
             if not input_pwd:

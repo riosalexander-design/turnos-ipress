@@ -244,10 +244,12 @@ def _init_db_tables_and_users():
             ("Responsable de Recursos Humanos", "Nombrado", "RRHH", "rrhh", "rrhh2026", "rrhh"),
         ]
 
-        # Hashes antiguos basados en CMP de 4 dígitos para migrar automáticamente si aún existen
+        # Hashes antiguos para migrar automáticamente si aún existen
         legacy_pin_hashes = {
             hash_pin("1201"), hash_pin("8432"), hash_pin("5319"),
-            hash_pin("0145"), hash_pin("4982"), hash_pin("9999")
+            hash_pin("0145"), hash_pin("4982"), hash_pin("9999"),
+            hash_pin("4182"), hash_pin("6935"), hash_pin("5274"),
+            hash_pin("8319"), hash_pin("7461"), hash_pin("admin2026"),
         }
 
         for name, cond, cmp_num, uname, pwd, role in initial_doctors:
@@ -259,8 +261,11 @@ def _init_db_tables_and_users():
                     VALUES (?, ?, ?, ?, ?, ?)
                 """, (name, cond, cmp_num, uname, hash_pin(pwd), role))
             else:
-                # Solo actualizar pin_hash si aún tiene el PIN antiguo de 4 dígitos o está vacío
-                new_pin_hash = hash_pin(pwd) if (not row["pin_hash"] or row["pin_hash"] in legacy_pin_hashes) else row["pin_hash"]
+                # Para Jefatura ('admin') y RRHH ('rrhh') garantizar siempre las claves oficiales (jefatura2026 / rrhh2026)
+                if role in ("admin", "rrhh") or not row["pin_hash"] or row["pin_hash"] in legacy_pin_hashes:
+                    new_pin_hash = hash_pin(pwd)
+                else:
+                    new_pin_hash = row["pin_hash"]
                 if (row["condition"] != cond or row["name"] != name or
                         row["username"] != uname or row["role"] != role or
                         row["pin_hash"] != new_pin_hash):
