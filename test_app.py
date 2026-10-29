@@ -471,6 +471,36 @@ class TestIPRESSScheduling(unittest.TestCase):
 
         print("[OK] Test 12: Bloqueo automatico de modificacion/eliminacion de turnos con citas reservadas verificado.")
 
+    def test_13_concrete_discrepancy_suggestion_avoids_previous_shift_service(self):
+        """Verifica que la sugerencia de discrepancia sea concreta ('Asignar a X al servicio Y...') y evite repetir el servicio del día anterior o último turno."""
+        import json
+        year, month = 2026, 10
+        with get_connection() as conn:
+            conn.execute("DELETE FROM shifts WHERE year = ? AND month = ? AND day IN (5, 6)", (year, month))
+            conn.commit()
+
+        # Día 5: Dra. Chunga (id=2) realiza M-CE, y Dra. Laureano (id=3) cubre M-TS el Día 6 (por lo que en el Día 6 solo queda libre CE cuando hay colisión en TU)
+        record_doctor_shift(year, month, 5, 2, "M", "CE", user_id=6, user_name="Jefatura Médica IPRESS", user_role="admin")
+        record_doctor_shift(year, month, 6, 3, "M", "TS", user_id=6, user_name="Jefatura Médica IPRESS", user_role="admin")
+
+        # Día 6: Tanto Dra. Caldas (id=1, último turno el Día 5 fue Libre o distinto de CE) como Dra. Chunga (id=2, cuyo día anterior fue M-CE) eligen M-TU
+        record_doctor_shift(year, month, 5, 1, "M", "TS", user_id=6, user_name="Jefatura Médica IPRESS", user_role="admin")
+        record_doctor_shift(year, month, 6, 1, "M", "TU", user_id=6, user_name="Jefatura Médica IPRESS", user_role="admin")
+        record_doctor_shift(year, month, 6, 2, "M", "TU", user_id=6, user_name="Jefatura Médica IPRESS", user_role="admin")
+
+        discs = detect_discrepancies(year, month)
+        day6_disc = next((d for d in discs if d["day"] == 6 and d["shift_period"] == "M" and d["service"] == "TU"), None)
+        self.assertIsNotNone(day6_disc)
+
+        alt = json.loads(day6_disc["suggested_alternative"])
+        # Como el único servicio libre en Mañana del Día 6 es CE, y Dra. Chunga (id=2) hizo CE el día anterior (Día 5),
+        # el motor debe sugerir asignar a Dra. Caldas (id=1, que hizo TS el Día 5) al servicio CE y mantener a Dra. Chunga en TU.
+        self.assertEqual(alt["doctor_reassign"]["id"], 1)
+        self.assertEqual(alt["doctor_reassign"]["new_service"], "CE")
+        self.assertTrue(alt["text"].startswith("Asignar a "))
+        self.assertIn("Consultorio de Medicina (CE)", alt["text"])
+        print(f"[OK] Test 13: Sugerencia concreta verificando turno anterior: {alt['text']}")
+
     @classmethod
     def tearDownClass(cls):
         """Limpia la base de datos temporal de pruebas."""

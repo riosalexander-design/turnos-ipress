@@ -901,10 +901,16 @@ with st.expander(f"⚠️ Discrepancias por Cruces de Propuestas ({len(open_disc
         st.success("✅ Actualmente no se registran cruces de servicios entre las propuestas cargadas.")
     else:
         for disc in open_discs:
-            st.markdown(f"**Día {disc['day']} ({disc['shift_period']})**: {disc['description']}")
+            st.markdown(f"**{disc['description']}**")
+            try:
+                import json as _json
+                alt_payload = _json.loads(disc["suggested_alternative"])
+                sug_text = alt_payload.get("text") or str(disc["suggested_alternative"])
+            except Exception:
+                sug_text = str(disc["suggested_alternative"])
             c_desc, c_btn = st.columns([3, 1])
             with c_desc:
-                st.info("💡 Alternativa Sugerida: Reasignar al servicio complementario libre.")
+                st.info(f"💡 **Sugerencia:** {sug_text}")
             with c_btn:
                 if is_admin_or_rrhh:
                     if st.button("✅ Aprobar Sugerencia", key=f"btn_disc_{disc['id']}", type="primary"):

@@ -629,17 +629,184 @@ def record_doctor_shift(
     sync_discrepancies_db(year, month)
     return {"success": True, "message": confirm_msg, "status_code": 200}
 
+def _extract_clinical_services(shift_period: str, service: str) -> list[str]:
+    """Extrae la lista de servicios asistenciales ('TU', 'CE', 'TS') de un turno."""
+    if shift_period in ("M", "T") and service in ("TU", "CE", "TS"):
+        return [service]
+    if shift_period == "12h" and service:
+        parts = [p.strip() for p in service.split("+") if p.strip() in ("TU", "CE", "TS")]
+        return parts
+    return []
+
+
+def _get_doctor_previous_shift_info(
+    doctor_id: int,
+    day: int,
+    shift_period: str,
+    shifts_by_doc_day: dict,
+    prev_month_shifts_by_doc: dict
+) -> dict:
+    """
+    Obtiene los servicios que realizó el médico en el día inmediato anterior (day - 1)
+    y en su último turno asistencial registrado, para evitar asignarle el mismo servicio.
+    """
+    doc_days = shifts_by_doc_day.get(doctor_id, {})
+
+    # 1. Servicios del día inmediatamente anterior (day - 1)
+    prev_day_services = set()
+    if day > 1 and (day - 1) in doc_days:
+        s_prev = doc_days[day - 1]
+        prev_day_services.update(_extract_clinical_services(s_prev["shift_period"], s_prev["service"]))
+    elif day == 1 and doctor_id in prev_month_shifts_by_doc:
+        prev_list = prev_month_shifts_by_doc[doctor_id]
+        if prev_list and prev_list[0]["is_last_day_of_prev_month"]:
+            prev_day_services.update(prev_list[0]["services"])
+
+    # 2. Servicios del último turno asistencial (buscando hacia atrás desde day - 1, o desde el mes anterior)
+    last_shift_services = set()
+    last_shift_desc = None
+
+    for prev_d in range(day - 1, 0, -1):
+        if prev_d in doc_days:
+            s_row = doc_days[prev_d]
+            srvs = _extract_clinical_services(s_row["shift_period"], s_row["service"])
+            if srvs:
+                last_shift_services.update(srvs)
+                when_txt = "el día anterior" if prev_d == day - 1 else f"el Día {prev_d:02d}"
+                last_shift_desc = f"{s_row['shift_period']}-{s_row['service']} ({when_txt})"
+                break
+
+    if not last_shift_services and doctor_id in prev_month_shifts_by_doc:
+        for pm_item in prev_month_shifts_by_doc[doctor_id]:
+            if pm_item["services"]:
+                last_shift_services.update(pm_item["services"])
+                last_shift_desc = f"{pm_item['shift_period']}-{pm_item['service']} (mes anterior)"
+                break
+
+    return {
+        "prev_day_services": prev_day_services,
+        "last_shift_services": last_shift_services,
+        "last_shift_desc": last_shift_desc
+    }
+
+
+def _select_best_reassignment(
+    doc1: dict,
+    doc2: dict,
+    day: int,
+    shift_period: str,
+    contested_service: str,
+    free_services: list[str],
+    all_period_services: list[str],
+    shifts_by_doc_day: dict,
+    prev_month_shifts_by_doc: dict,
+    year: int,
+    month: int
+) -> dict:
+    """
+    Determina de forma inteligente a cuál de los dos médicos en colisión reasignar y a qué servicio libre,
+    verificando que NO sea el servicio que le tocó el día anterior ni en su último turno asistencial,
+    y respetando los bloqueos por citas de pacientes.
+    """
+    candidate_services = list(free_services) if free_services else [s for s in all_period_services if s != contested_service]
+    if not candidate_services:
+        candidate_services = list(all_period_services)
+
+    info_1 = _get_doctor_previous_shift_info(doc1["doctor_id"], day, shift_period, shifts_by_doc_day, prev_month_shifts_by_doc)
+    info_2 = _get_doctor_previous_shift_info(doc2["doctor_id"], day, shift_period, shifts_by_doc_day, prev_month_shifts_by_doc)
+    info_map = {doc1["doctor_id"]: info_1, doc2["doctor_id"]: info_2}
+
+    options = []
+    # Evaluar reasignar primero a doc2 o reasignar a doc1
+    for idx_pair, (doc_reassign, doc_keep) in enumerate([(doc2, doc1), (doc1, doc2)]):
+        r_id = doc_reassign["doctor_id"]
+        k_id = doc_keep["doctor_id"]
+        r_info = info_map[r_id]
+        k_info = info_map[k_id]
+
+        for alt_srv in candidate_services:
+            # Verificar si doc_reassign tiene bloqueo de citas que impida moverlo a alt_srv
+            if doc_reassign["shift_period"] == "12h":
+                parts = doc_reassign["service"].split("+")
+                m_part = alt_srv if shift_period == "M" else parts[0]
+                t_part = alt_srv if shift_period == "T" else (parts[1] if len(parts) > 1 else "CE")
+                sim_new_srv = f"{m_part}+{t_part}"
+            else:
+                sim_new_srv = alt_srv
+
+            allowed_mod, _ = check_shift_modification_allowed(
+                year=year,
+                month=month,
+                day=day,
+                doctor_id=r_id,
+                new_shift_period=doc_reassign["shift_period"],
+                new_service=sim_new_srv
+            )
+            lock_penalty = 0 if allowed_mod else 100
+
+            not_free_penalty = 0 if alt_srv in free_services else 10
+            # Penalizar si alt_srv repite el servicio del día anterior o del último turno del médico a reasignar
+            repeat_prev_day_reassign = 1 if alt_srv in r_info["prev_day_services"] else 0
+            repeat_last_shift_reassign = 1 if alt_srv in r_info["last_shift_services"] else 0
+            # Penalizar secundariamente si el médico que se queda repite el servicio de su día anterior o último turno
+            repeat_prev_day_keep = 1 if contested_service in k_info["prev_day_services"] else 0
+            repeat_last_shift_keep = 1 if contested_service in k_info["last_shift_services"] else 0
+
+            score_tuple = (
+                lock_penalty,
+                not_free_penalty,
+                repeat_prev_day_reassign,
+                repeat_last_shift_reassign,
+                repeat_prev_day_keep,
+                repeat_last_shift_keep,
+                idx_pair
+            )
+            options.append((score_tuple, doc_reassign, doc_keep, alt_srv, r_info))
+
+    options.sort(key=lambda x: x[0])
+    _, chosen_reassign, chosen_keep, chosen_srv, chosen_r_info = options[0]
+
+    period_label = "Mañana" if shift_period == "M" else "Tarde"
+    new_srv_label = SERVICE_LABELS.get(chosen_srv, chosen_srv)
+    keep_srv_label = SERVICE_LABELS.get(contested_service, contested_service)
+
+    if chosen_r_info["last_shift_desc"]:
+        history_note = f"en su último turno realizó {chosen_r_info['last_shift_desc']}, por lo que no repite servicio"
+    else:
+        history_note = "verificado sin repetición de servicio en turno previo"
+
+    concrete_text = (
+        f"Asignar a {chosen_reassign['name']} al servicio {new_srv_label} en Turno {period_label} "
+        f"y mantener a {chosen_keep['name']} en {keep_srv_label} ({history_note})."
+    )
+
+    return {
+        "action": "reassign_service",
+        "doctor_keep": {"id": chosen_keep["doctor_id"], "name": chosen_keep["name"], "service": contested_service},
+        "doctor_reassign": {"id": chosen_reassign["doctor_id"], "name": chosen_reassign["name"], "new_service": chosen_srv},
+        "day": day,
+        "shift_period": shift_period,
+        "text": concrete_text
+    }
+
+
 def detect_discrepancies(year: int, month: int, current_sim_time: datetime = None) -> list:
     """
     Detecta automáticamente las discrepancias en el rol propuesto:
     1. Colisión de servicios cuando dos médicos eligen el mismo servicio habiendo otro servicio descubierto.
-    Genera sugerencias alternativas automáticas y calcula el plazo de 72h (máx día 10 a las 00:00).
+    Genera sugerencias concretas ("Asignar a X al servicio Y...") verificando que no sea el servicio
+    que le tocó el día anterior ni en su último turno, y calcula el plazo de 72h (máx día 10 a las 00:00).
     """
     if current_sim_time is None:
         current_sim_time = datetime.now()
 
     month_info = get_month_info(year, month)
     deadline_dt, deadline_str = calculate_deadline(current_sim_time, year, month)
+
+    prev_year = year if month > 1 else year - 1
+    prev_month = month - 1 if month > 1 else 12
+    prev_month_info = get_month_info(prev_year, prev_month)
+    prev_num_days = prev_month_info["num_days"]
 
     discrepancies = []
 
@@ -651,9 +818,30 @@ def detect_discrepancies(year: int, month: int, current_sim_time: datetime = Non
             WHERE s.year = ? AND s.month = ?
         """, (year, month)).fetchall()
 
+        prev_month_rows = conn.execute("""
+            SELECT s.day, s.shift_period, s.service, s.doctor_id
+            FROM shifts s
+            WHERE s.year = ? AND s.month = ?
+            ORDER BY s.day DESC
+        """, (prev_year, prev_month)).fetchall()
+
+        prev_month_shifts_by_doc = {}
+        for pr in prev_month_rows:
+            srvs = _extract_clinical_services(pr["shift_period"], pr["service"])
+            if srvs:
+                prev_month_shifts_by_doc.setdefault(pr["doctor_id"], []).append({
+                    "day": pr["day"],
+                    "shift_period": pr["shift_period"],
+                    "service": pr["service"],
+                    "services": set(srvs),
+                    "is_last_day_of_prev_month": (pr["day"] == prev_num_days)
+                })
+
         shifts_by_day = {}
+        shifts_by_doc_day = {}
         for s in all_month_shifts:
             shifts_by_day.setdefault(s["day"], []).append(s)
+            shifts_by_doc_day.setdefault(s["doctor_id"], {})[s["day"]] = s
 
         for d in range(1, month_info["num_days"] + 1):
             shifts_day = shifts_by_day.get(d, [])
@@ -676,17 +864,22 @@ def detect_discrepancies(year: int, month: int, current_sim_time: datetime = Non
                 if len(docs_list) > 1 and (len(free_m_services) > 0 or all(x["shift_period"] == "M" for x in docs_list)):
                     doc1 = docs_list[0]
                     doc2 = docs_list[1]
-                    alt_service = free_m_services[0] if free_m_services else ("CE" if srv != "CE" else "TS")
 
-                    suggestion = {
-                        "action": "reassign_service",
-                        "doctor_keep": {"id": doc1["doctor_id"], "name": doc1["name"], "service": srv},
-                        "doctor_reassign": {"id": doc2["doctor_id"], "name": doc2["name"], "new_service": alt_service},
-                        "day": d,
-                        "shift_period": "M",
-                        "text": f"Mantener a {doc1['name']} en Mañana-{srv} y reasignar a {doc2['name']} a Mañana-{alt_service}."
-                    }
+                    suggestion = _select_best_reassignment(
+                        doc1=doc1,
+                        doc2=doc2,
+                        day=d,
+                        shift_period="M",
+                        contested_service=srv,
+                        free_services=free_m_services,
+                        all_period_services=SERVICES_MORNING,
+                        shifts_by_doc_day=shifts_by_doc_day,
+                        prev_month_shifts_by_doc=prev_month_shifts_by_doc,
+                        year=year,
+                        month=month
+                    )
 
+                    srv_full = SERVICE_LABELS.get(srv, srv)
                     discrepancies.append({
                         "year": year,
                         "month": month,
@@ -698,7 +891,7 @@ def detect_discrepancies(year: int, month: int, current_sim_time: datetime = Non
                         "doctor2_id": doc2["doctor_id"],
                         "doctor2_name": doc2["name"],
                         "conflict_type": "puesto_duplicado",
-                        "description": f"Día {d}: Conflicto en Turno Mañana. Ambos médicos ({doc1['name']} y {doc2['name']}) registraron el mismo servicio ({srv}).",
+                        "description": f"Día {d:02d} (Turno Mañana): {doc1['name']} y {doc2['name']} coincidieron en el servicio {srv_full}.",
                         "suggested_alternative": json.dumps(suggestion),
                         "suggested_text": suggestion["text"],
                         "deadline_datetime": deadline_dt.isoformat(),
@@ -722,17 +915,22 @@ def detect_discrepancies(year: int, month: int, current_sim_time: datetime = Non
                 if len(docs_list) > 1 and (len(free_t_services) > 0 or all(x["shift_period"] == "T" for x in docs_list)):
                     doc1 = docs_list[0]
                     doc2 = docs_list[1]
-                    alt_service = free_t_services[0] if free_t_services else ("CE" if srv == "TU" else "TU")
 
-                    suggestion = {
-                        "action": "reassign_service",
-                        "doctor_keep": {"id": doc1["doctor_id"], "name": doc1["name"], "service": srv},
-                        "doctor_reassign": {"id": doc2["doctor_id"], "name": doc2["name"], "new_service": alt_service},
-                        "day": d,
-                        "shift_period": "T",
-                        "text": f"Mantener a {doc1['name']} en Tarde-{srv} y reasignar a {doc2['name']} a Tarde-{alt_service}."
-                    }
+                    suggestion = _select_best_reassignment(
+                        doc1=doc1,
+                        doc2=doc2,
+                        day=d,
+                        shift_period="T",
+                        contested_service=srv,
+                        free_services=free_t_services,
+                        all_period_services=SERVICES_AFTERNOON,
+                        shifts_by_doc_day=shifts_by_doc_day,
+                        prev_month_shifts_by_doc=prev_month_shifts_by_doc,
+                        year=year,
+                        month=month
+                    )
 
+                    srv_full = SERVICE_LABELS.get(srv, srv)
                     discrepancies.append({
                         "year": year,
                         "month": month,
@@ -744,7 +942,7 @@ def detect_discrepancies(year: int, month: int, current_sim_time: datetime = Non
                         "doctor2_id": doc2["doctor_id"],
                         "doctor2_name": doc2["name"],
                         "conflict_type": "puesto_duplicado",
-                        "description": f"Día {d}: Conflicto en Turno Tarde. Ambos médicos ({doc1['name']} y {doc2['name']}) registraron el mismo servicio ({srv}).",
+                        "description": f"Día {d:02d} (Turno Tarde): {doc1['name']} y {doc2['name']} coincidieron en el servicio {srv_full}.",
                         "suggested_alternative": json.dumps(suggestion),
                         "suggested_text": suggestion["text"],
                         "deadline_datetime": deadline_dt.isoformat(),
@@ -765,7 +963,7 @@ def sync_discrepancies_db(year: int, month: int, current_sim_time: datetime = No
             key = (d["year"], d["month"], d["day"], d["shift_period"], d["service"], d["doctor1_id"], d["doctor2_id"])
             active_keys.add(key)
             exists = conn.execute("""
-                SELECT id, status FROM discrepancies
+                SELECT id, status, description, suggested_alternative FROM discrepancies
                 WHERE year = ? AND month = ? AND day = ? AND shift_period = ? AND service = ?
                   AND doctor1_id = ? AND doctor2_id = ? AND status = 'open'
             """, key).fetchone()
@@ -782,6 +980,14 @@ def sync_discrepancies_db(year: int, month: int, current_sim_time: datetime = No
                     d["doctor1_id"], d["doctor2_id"], d["conflict_type"], d["description"],
                     d["suggested_alternative"], d["deadline_datetime"]
                 ))
+                has_changes = True
+            elif exists["description"] != d["description"] or exists["suggested_alternative"] != d["suggested_alternative"]:
+                conn.execute("""
+                    UPDATE discrepancies
+                    SET description = ?,
+                        suggested_alternative = ?
+                    WHERE id = ?
+                """, (d["description"], d["suggested_alternative"], exists["id"]))
                 has_changes = True
         
         open_db = conn.execute("""
