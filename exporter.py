@@ -682,8 +682,20 @@ def parse_and_import_doctor_proposal(
             return {"success": False, "error": lock_err, "status_code": 409}
 
     # Guardar propuesta en la base de datos para este único médico
+    import hashlib
+    from datetime import datetime, timezone, timedelta
+
+    peru_tz = timezone(timedelta(hours=-5))
+    now_peru = datetime.now(peru_tz)
+    timestamp_display = now_peru.strftime("%d/%m/%Y %H:%M:%S")
+
     saved_count = 0
+    count_6h = 0
+    count_12h = 0
+    count_des = 0
     summary_parts = []
+    shifts_list = []
+
     with get_connection() as conn:
         conn.execute(
             "DELETE FROM shifts WHERE year = ? AND month = ? AND doctor_id = ?",
@@ -703,7 +715,27 @@ def parse_and_import_doctor_proposal(
                         updated_at = CURRENT_TIMESTAMP
                 """, (expected_year, expected_month, d_num, sp, srv, doctor["id"]))
                 saved_count += 1
+                if sp in ("M", "T"):
+                    count_6h += 1
+                    lbl = f"{sp}-{srv}"
+                elif sp == "12h":
+                    count_12h += 1
+                    lbl = f"12h ({srv})"
+                elif sp == "DES":
+                    count_des += 1
+                    lbl = "DES"
+                else:
+                    lbl = f"{sp} ({srv})"
+
                 summary_parts.append(f"Día {d_num:02d}:{sp}({srv})")
+                shifts_list.append({
+                    "day": d_num,
+                    "weekday_name": days_meta[d_num]["weekday_name"],
+                    "weekday_short": days_meta[d_num]["weekday_short"],
+                    "shift_period": sp,
+                    "service": srv,
+                    "label": lbl
+                })
 
                 # Si es 12h, asegurar descanso post-guardia (DES) al día siguiente si es laborable y no fue especificado
                 if sp == "12h" and (d_num + 1) <= num_days and not days_meta[d_num + 1]["is_sunday"]:
@@ -711,12 +743,16 @@ def parse_and_import_doctor_proposal(
                     if next_sp == "LIBRE":
                         parsed_shifts[d_num + 1] = ("DES", "DES")
 
-        conn.commit()
+        total_equivalent_shifts = count_6h + (count_12h * 2)
+        raw_token = f"{expected_year}-{expected_month:02d}-{doctor['cmp']}-{now_peru.isoformat()}-{'|'.join(summary_parts)}"
+        hash_short = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()[:6].upper()
+        receipt_code = f"PROP-{expected_year}{expected_month:02d}-{doctor['cmp']}-{hash_short}"
 
         details_log = (
-            f"Carga de propuesta mensual ({month_info['month_name']} {expected_year}) por {doctor['name']} "
-            f"(CMP {doctor['cmp']}): {saved_count} días registrados [{', '.join(summary_parts[:12])}"
-            f"{'...' if len(summary_parts) > 12 else ''}]. Archivo procesado en memoria y descartado."
+            f"[Constancia #{receipt_code}] Carga de propuesta mensual ({month_info['month_name']} {expected_year}) "
+            f"por {doctor['name']} (CMP {doctor['cmp']}): {total_equivalent_shifts}/{month_info['monthly_quota']} turnos equivalentes "
+            f"(6h={count_6h}, 12h={count_12h}, DES={count_des}, {saved_count} días registrados: {', '.join(summary_parts)}). "
+            f"Archivo procesado en memoria."
         )
         log_audit(
             doctor["id"],
@@ -725,6 +761,9 @@ def parse_and_import_doctor_proposal(
             details_log,
             conn=conn
         )
+        audit_row = conn.execute("SELECT MAX(id) as max_id FROM audit_logs WHERE doctor_id = ?", (doctor["id"],)).fetchone()
+        audit_log_id = audit_row["max_id"] if audit_row else 0
+        conn.commit()
 
     # Sincronizar discrepancias para detectar cualquier cruce con otros médicos
     sync_discrepancies_db(expected_year, expected_month)
@@ -736,15 +775,193 @@ def parse_and_import_doctor_proposal(
               AND (doctor1_id = ? OR doctor2_id = ?)
         """, (expected_year, expected_month, doctor["id"], doctor["id"])).fetchone()["cnt"]
 
+    receipt = {
+        "receipt_code": receipt_code,
+        "audit_log_id": audit_log_id,
+        "timestamp_str": f"{timestamp_display} (Hora Oficial Perú)",
+        "doctor_id": doctor["id"],
+        "doctor_name": doctor["name"],
+        "doctor_cmp": doctor["cmp"],
+        "doctor_condition": doctor.get("condition", ""),
+        "year": expected_year,
+        "month": expected_month,
+        "month_name": month_info["month_name"],
+        "monthly_quota": month_info["monthly_quota"],
+        "count_6h": count_6h,
+        "count_12h": count_12h,
+        "count_des": count_des,
+        "total_equivalent_shifts": total_equivalent_shifts,
+        "saved_days_count": saved_count,
+        "discrepancies_detected": doctor_discs,
+        "shifts_list": shifts_list
+    }
+
     return {
         "success": True,
         "doctor_id": doctor["id"],
         "doctor_name": doctor["name"],
         "saved_days_count": saved_count,
         "discrepancies_detected": doctor_discs,
+        "receipt_code": receipt_code,
+        "receipt": receipt,
         "message": (
-            f"Propuesta de {doctor['name']} cargada con éxito ({saved_count} días programados). "
-            f"{f'Se detectaron {doctor_discs} cruce(s) de horario en la sección de Discrepancias.' if doctor_discs > 0 else 'Sin cruces detectados.'}"
+            f"Propuesta de {doctor['name']} registrada con éxito (Constancia #{receipt_code} — {total_equivalent_shifts}/{month_info['monthly_quota']} turnos equivalentes). "
+            f"{f'Se detectaron {doctor_discs} cruce(s) en la sección de Discrepancias.' if doctor_discs > 0 else 'Sin cruces detectados.'}"
         ),
         "status_code": 200
     }
+
+
+def generate_proposal_receipt_excel(receipt: dict, ipress_name: str = "IPRESS SALUD PERÚ") -> io.BytesIO:
+    """
+    Genera un archivo Excel (.xlsx) con la Constancia Oficial de Recepción de Propuesta de Horario Médico
+    para que el médico cirujano pueda descargarlo y conservarlo como cargo.
+    """
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Constancia Propuesta"
+    ws.views.sheetView[0].showGridLines = True
+
+    thin_border = Border(
+        left=Side(style='thin', color='BFBFBF'),
+        right=Side(style='thin', color='BFBFBF'),
+        top=Side(style='thin', color='BFBFBF'),
+        bottom=Side(style='thin', color='BFBFBF')
+    )
+
+    ws.merge_cells("A1:E1")
+    ws["A1"] = f"{ipress_name} - CONSTANCIA DE RECEPCIÓN DE PROPUESTA DE HORARIO MÉDICO"
+    ws["A1"].font = Font(name="Calibri", size=13, bold=True, color="FFFFFF")
+    ws["A1"].fill = PatternFill(start_color=COLOR_HEADER_BG, end_color=COLOR_HEADER_BG, fill_type="solid")
+    ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[1].height = 26
+
+    ws.merge_cells("A2:E2")
+    ws["A2"] = f"CÓDIGO DE CONSTANCIA: {receipt['receipt_code']}  |  REGISTRO EN LOG DE AUDITORÍA: #{receipt.get('audit_log_id', '-')}"
+    ws["A2"].font = Font(name="Calibri", size=10, bold=True, color="166534")
+    ws["A2"].fill = PatternFill(start_color="DCFCE7", end_color="DCFCE7", fill_type="solid")
+    ws["A2"].alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[2].height = 22
+
+    meta_rows = [
+        ("MÉDICO CIRUJANO:", receipt["doctor_name"], "CMP:", str(receipt["doctor_cmp"])),
+        ("CONDICIÓN LABORAL:", receipt.get("doctor_condition", ""), "MES PROGRAMADO:", f"{receipt['month_name']} {receipt['year']}"),
+        ("FECHA Y HORA DE REGISTRO:", receipt["timestamp_str"], "TURNOS EQUIVALENTES / META:", f"{receipt['total_equivalent_shifts']} / {receipt['monthly_quota']} turnos"),
+        ("DETALLE DE JORNADAS:", f"6h: {receipt['count_6h']} | 12h: {receipt['count_12h']} | DES: {receipt['count_des']}", "CRUCES DETECTADOS:", str(receipt["discrepancies_detected"])),
+    ]
+    for r_i, (k1, v1, k2, v2) in enumerate(meta_rows, start=4):
+        ws.cell(row=r_i, column=1, value=k1).font = Font(bold=True, size=10, color="1F4E79")
+        ws.cell(row=r_i, column=2, value=v1).font = Font(bold=True, size=10)
+        ws.cell(row=r_i, column=3, value=k2).font = Font(bold=True, size=10, color="1F4E79")
+        ws.cell(row=r_i, column=4, value=v2).font = Font(bold=True, size=10)
+
+    header_row = 9
+    headers = ["DÍA", "DÍA DE SEMANA", "JORNADA", "SERVICIO ASISTENCIAL", "ETIQUETA EN MATRIZ"]
+    for c_i, h_txt in enumerate(headers, start=1):
+        c = ws.cell(row=header_row, column=c_i, value=h_txt)
+        c.font = Font(bold=True, color="FFFFFF", size=10)
+        c.fill = PatternFill(start_color=COLOR_HEADER_BG, end_color=COLOR_HEADER_BG, fill_type="solid")
+        c.alignment = Alignment(horizontal="center", vertical="center")
+        c.border = thin_border
+
+    for idx_s, sh in enumerate(receipt.get("shifts_list", []), start=10):
+        vals = [
+            f"{sh['day']:02d}/{receipt['month']:02d}/{receipt['year']}",
+            sh["weekday_name"],
+            sh["shift_period"],
+            sh["service"],
+            sh["label"]
+        ]
+        for c_i, val in enumerate(vals, start=1):
+            c = ws.cell(row=idx_s, column=c_i, value=val)
+            c.border = thin_border
+            c.alignment = Alignment(horizontal="center" if c_i != 2 else "left", vertical="center")
+            c.font = Font(size=10, bold=(c_i == 5))
+
+    ws.column_dimensions["A"].width = 26
+    ws.column_dimensions["B"].width = 32
+    ws.column_dimensions["C"].width = 28
+    ws.column_dimensions["D"].width = 26
+    ws.column_dimensions["E"].width = 22
+
+    out = io.BytesIO()
+    wb.save(out)
+    out.seek(0)
+    return out
+
+
+def generate_proposal_receipt_html(receipt: dict, ipress_name: str = "IPRESS SALUD PERÚ") -> str:
+    """
+    Genera un documento HTML auto-contenido (listo para imprimir o guardar en PDF/Imagen)
+    con la Constancia Oficial de Recepción de Propuesta de Horario Médico.
+    """
+    rows_html = []
+    for sh in receipt.get("shifts_list", []):
+        rows_html.append(
+            f"<tr>"
+            f"<td style='padding:6px 10px;border:1px solid #cbd5e1;text-align:center;font-weight:bold;'>{sh['day']:02d}/{receipt['month']:02d}/{receipt['year']}</td>"
+            f"<td style='padding:6px 10px;border:1px solid #cbd5e1;'>{sh['weekday_name']}</td>"
+            f"<td style='padding:6px 10px;border:1px solid #cbd5e1;text-align:center;'>{sh['shift_period']}</td>"
+            f"<td style='padding:6px 10px;border:1px solid #cbd5e1;text-align:center;'>{sh['service']}</td>"
+            f"<td style='padding:6px 10px;border:1px solid #cbd5e1;text-align:center;font-weight:bold;color:#0369a1;'>{sh['label']}</td>"
+            f"</tr>"
+        )
+    table_body = "".join(rows_html) or "<tr><td colspan='5' style='padding:10px;text-align:center;'>Sin turnos registrados</td></tr>"
+
+    return f"""<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Constancia de Propuesta - {receipt['receipt_code']}</title>
+<style>
+    body {{ font-family: 'Segoe UI', Arial, sans-serif; background: #f8fafc; color: #1e293b; padding: 24px; }}
+    .card {{ max-width: 780px; margin: 0 auto; background: #ffffff; border: 2px solid #166534; border-radius: 12px; padding: 24px; box-shadow: 0 4px 15px rgba(0,0,0,0.08); }}
+    .header {{ text-align: center; border-bottom: 2px solid #dcfce7; padding-bottom: 14px; margin-bottom: 16px; }}
+    .header h1 {{ margin: 0; font-size: 18px; color: #14532d; text-transform: uppercase; }}
+    .header p {{ margin: 4px 0 0; font-size: 13px; color: #475569; }}
+    .seal {{ background: #dcfce7; color: #166534; padding: 10px 14px; border-radius: 8px; font-weight: bold; text-align: center; font-size: 13px; margin-bottom: 16px; border: 1px solid #86efac; }}
+    .grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 10px 20px; font-size: 13px; margin-bottom: 18px; background: #f8fafc; padding: 14px; border-radius: 8px; border: 1px solid #e2e8f0; }}
+    table {{ width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 10px; }}
+    th {{ background: #1e293b; color: white; padding: 8px; border: 1px solid #1e293b; }}
+    .footer {{ margin-top: 18px; font-size: 11px; color: #64748b; text-align: center; border-top: 1px dashed #cbd5e1; padding-top: 10px; }}
+    .btn-print {{ display: inline-block; margin-bottom: 16px; padding: 8px 16px; background: #166534; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; }}
+    @media print {{ .no-print {{ display: none; }} body {{ background: white; padding: 0; }} .card {{ box-shadow: none; }} }}
+</style>
+</head>
+<body>
+<div class="card">
+    <div class="no-print" style="text-align:right;">
+        <button class="btn-print" onclick="window.print()">🖨️ Imprimir / Guardar en PDF</button>
+    </div>
+    <div class="header">
+        <h1>{ipress_name} — Constancia Oficial de Recepción de Propuesta</h1>
+        <p>Programación Mensual de Turnos Asistenciales — {receipt['month_name']} {receipt['year']}</p>
+    </div>
+    <div class="seal">
+        ✅ PROPUESTA REGISTRADA EN EL SISTEMA Y EN EL LOG DE AUDITORÍA<br>
+        Código de Constancia: {receipt['receipt_code']} &nbsp;|&nbsp; ID Auditoría: #{receipt.get('audit_log_id', '-')}
+    </div>
+    <div class="grid">
+        <div><strong>Médico Titular:</strong> {receipt['doctor_name']}</div>
+        <div><strong>CMP / Condición:</strong> {receipt['doctor_cmp']} ({receipt.get('doctor_condition', '')})</div>
+        <div><strong>Fecha y Hora de Recepción:</strong> {receipt['timestamp_str']}</div>
+        <div><strong>Turnos Equivalentes / Meta:</strong> {receipt['total_equivalent_shifts']} / {receipt['monthly_quota']} turnos</div>
+        <div><strong>Desglose de Turnos:</strong> 6h: {receipt['count_6h']} | 12h: {receipt['count_12h']} | DES: {receipt['count_des']}</div>
+        <div><strong>Cruces Detectados:</strong> {receipt['discrepancies_detected']}</div>
+    </div>
+    <h3 style="font-size:13px; margin: 0 0 6px; color:#1e293b;">Detalle de Turnos Propuestos ({receipt['saved_days_count']} fechas registradas):</h3>
+    <table>
+        <thead>
+            <tr><th>Fecha</th><th>Día Semana</th><th>Período</th><th>Servicio</th><th>Turno Registrado</th></tr>
+        </thead>
+        <tbody>
+            {table_body}
+        </tbody>
+    </table>
+    <div class="footer">
+        Documento generado automáticamente por el Sistema de Programación Asistencial de la IPRESS.<br>
+        El registro completo queda respaldado de forma inmutable en el Log de Auditoría Institucional (retención 90 días).
+    </div>
+</div>
+</body>
+</html>"""

@@ -43,7 +43,9 @@ from scheduler_engine import (
 from exporter import (
     generate_excel_schedule,
     generate_blank_proposal_template,
-    parse_and_import_doctor_proposal
+    parse_and_import_doctor_proposal,
+    generate_proposal_receipt_excel,
+    generate_proposal_receipt_html
 )
 
 # Componente interactivo de matriz mensual (permite hacer clic en una fecha o celda para abrir pop-up)
@@ -587,9 +589,79 @@ with st.expander("📄 Propuesta de Horario para Médicos Cirujanos (Descargar F
                 )
                 if res_imp["success"]:
                     st.session_state["shift_saved_confirmation"] = res_imp["message"]
+                    st.session_state["last_proposal_receipt"] = res_imp.get("receipt")
                     st.rerun()
                 else:
                     st.error(res_imp["error"])
+
+    # Mostrar Constancia Oficial de Recepción de Propuesta (para fotografiar o descargar)
+    if st.session_state.get("last_proposal_receipt"):
+        rcpt = st.session_state["last_proposal_receipt"]
+        shifts_badges_html = " ".join(
+            f"<span style='display:inline-block;background:#e0f2fe;color:#0369a1;border:1px solid #bae6fd;"
+            f"border-radius:5px;padding:2px 7px;margin:2px;font-size:11.5px;font-weight:bold;'>"
+            f"Día {s['day']:02d} ({s['weekday_short']}): {s['label']}</span>"
+            for s in rcpt.get("shifts_list", [])
+        ) or "<em>Sin turnos registrados</em>"
+
+        st.markdown("---")
+        st.markdown(
+            f"""
+            <div style="border: 2px solid #166534; background-color: #f0fdf4; border-radius: 12px; padding: 16px 20px; margin-bottom: 12px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; border-bottom:1px solid #bbf7d0; padding-bottom:8px; margin-bottom:10px;">
+                    <div>
+                        <span style="font-size:15px; font-weight:800; color:#14532d;">✅ CONSTANCIA OFICIAL DE RECEPCIÓN DE PROPUESTA DE HORARIO</span><br>
+                        <span style="font-size:12px; color:#166534;">📷 <em>Puede tomar captura de pantalla o fotografía de esta constancia, o descargar su cargo abajo.</em></span>
+                    </div>
+                    <div style="background:#dcfce7; border:1px solid #86efac; padding:6px 12px; border-radius:8px; text-align:right;">
+                        <span style="font-size:11px; color:#166534; font-weight:bold;">CÓDIGO DE CONSTANCIA</span><br>
+                        <span style="font-size:13.5px; font-weight:900; color:#14532d; font-family:monospace;">{rcpt['receipt_code']}</span>
+                    </div>
+                </div>
+                <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap:8px; font-size:12.5px; color:#1e293b; margin-bottom:10px;">
+                    <div><strong>Médico Titular:</strong> {rcpt['doctor_name']}</div>
+                    <div><strong>CMP / Condición:</strong> {rcpt['doctor_cmp']} ({rcpt.get('doctor_condition', '')})</div>
+                    <div><strong>Mes de Programación:</strong> {rcpt['month_name']} {rcpt['year']}</div>
+                    <div><strong>Fecha y Hora Exacta:</strong> {rcpt['timestamp_str']}</div>
+                    <div><strong>Turnos Equivalentes / Meta:</strong> {rcpt['total_equivalent_shifts']} / {rcpt['monthly_quota']} turnos (6h: {rcpt['count_6h']}, 12h: {rcpt['count_12h']}, DES: {rcpt['count_des']})</div>
+                    <div><strong>Registro en Log de Auditoría:</strong> ID #{rcpt.get('audit_log_id', '-')} ({rcpt['discrepancies_detected']} cruce(s) detectado(s))</div>
+                </div>
+                <div style="background:#ffffff; border:1px solid #cbd5e1; border-radius:8px; padding:10px;">
+                    <div style="font-size:11.5px; font-weight:bold; color:#334155; margin-bottom:6px;">
+                        Detalle de fechas propuestas registradas ({rcpt['saved_days_count']} días):
+                    </div>
+                    <div>{shifts_badges_html}</div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+        dl_c1, dl_c2, dl_c3 = st.columns([2, 2, 1])
+        rcpt_surname = rcpt["doctor_name"].split(",")[0].strip().replace(" ", "_")
+        with dl_c1:
+            rcpt_excel_stream = generate_proposal_receipt_excel(rcpt, "IPRESS SALUD PERÚ")
+            st.download_button(
+                label="📥 Descargar Cargo / Constancia en Excel (.xlsx)",
+                data=rcpt_excel_stream.getvalue(),
+                file_name=f"Constancia_Propuesta_{rcpt_surname}_{rcpt['month']:02d}_{rcpt['year']}_{rcpt['receipt_code']}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="btn_dl_rcpt_xlsx"
+            )
+        with dl_c2:
+            rcpt_html_str = generate_proposal_receipt_html(rcpt, "IPRESS SALUD PERÚ")
+            st.download_button(
+                label="🖨️ Descargar Constancia para Imprimir / PDF (.html)",
+                data=rcpt_html_str.encode("utf-8"),
+                file_name=f"Constancia_Propuesta_{rcpt_surname}_{rcpt['month']:02d}_{rcpt['year']}_{rcpt['receipt_code']}.html",
+                mime="text/html",
+                use_container_width=True,
+                key="btn_dl_rcpt_html"
+            )
+        with dl_c3:
+            if st.button("✖ Cerrar Constancia", use_container_width=True, key="btn_close_rcpt"):
+                st.session_state["last_proposal_receipt"] = None
+                st.rerun()
 
 # -------------------------------------------------------------------
 # BARRA DE ACCIONES INSTITUCIONALES (SIN BOTÓN DE GRABAR TURNO; SE EDITA HACIENDO CLIC EN LA FECHA/CELDA)

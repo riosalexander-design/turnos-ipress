@@ -314,10 +314,17 @@ class TestIPRESSScheduling(unittest.TestCase):
         self.assertEqual(res_other_doc["status_code"], 403)
         self.assertIn("ACCESO DENEGADO", res_other_doc["error"])
 
-        # 3b. Dra. Caldas (id=1) sube su propia propuesta -> Éxito (200), se refleja en horario y en audit_logs
+        # 3b. Dra. Caldas (id=1) sube su propia propuesta -> Éxito (200), genera constancia y se refleja en horario y en audit_logs
+        from exporter import generate_proposal_receipt_excel, generate_proposal_receipt_html
         res_own_prop = parse_and_import_doctor_proposal(filled_bytes, 2026, 10, expected_doctor_id=doc1["id"])
         self.assertTrue(res_own_prop["success"])
         self.assertEqual(res_own_prop["saved_days_count"], 1)
+        self.assertIn("receipt_code", res_own_prop)
+        self.assertTrue(res_own_prop["receipt_code"].startswith("PROP-202610-71201-"))
+        rcpt_xlsx = generate_proposal_receipt_excel(res_own_prop["receipt"])
+        self.assertGreater(len(rcpt_xlsx.getvalue()), 2000)
+        rcpt_html = generate_proposal_receipt_html(res_own_prop["receipt"])
+        self.assertIn(res_own_prop["receipt_code"], rcpt_html)
 
         # 3c. Si Dra. Chunga (id=2) sube su propia propuesta con el mismo turno M-TU el día 5 -> se genera cruce en discrepancias
         tpl2_stream = generate_blank_proposal_template(2026, 10, doc2)
