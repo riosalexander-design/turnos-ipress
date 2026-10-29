@@ -181,7 +181,8 @@ def check_shift_modification_allowed(
     day: int,
     doctor_id: int,
     new_shift_period: str,
-    new_service: str
+    new_service: str,
+    locks_map: dict = None
 ) -> tuple[bool, str]:
     """
     Verifica si un cambio de horario para (doctor_id, year, month, day) hacia (new_shift_period, new_service)
@@ -192,7 +193,8 @@ def check_shift_modification_allowed(
       (es decir, ser 'T' con 'CE' o '12h' que termine con '+CE').
     Retorna (True, "") si está permitido, o (False, mensaje_de_bloqueo) si está bloqueado por citas.
     """
-    locks_map = get_month_appointment_locks(year, month)
+    if locks_map is None:
+        locks_map = get_month_appointment_locks(year, month)
     lock_info = locks_map.get((int(doctor_id), int(day)))
     if not lock_info or lock_info["total_appointments"] <= 0:
         return True, ""
@@ -701,7 +703,8 @@ def _select_best_reassignment(
     shifts_by_doc_day: dict,
     prev_month_shifts_by_doc: dict,
     year: int,
-    month: int
+    month: int,
+    locks_map: dict = None
 ) -> dict:
     """
     Determina de forma inteligente a cuál de los dos médicos en colisión reasignar y a qué servicio libre,
@@ -740,7 +743,8 @@ def _select_best_reassignment(
                 day=day,
                 doctor_id=r_id,
                 new_shift_period=doc_reassign["shift_period"],
-                new_service=sim_new_srv
+                new_service=sim_new_srv,
+                locks_map=locks_map
             )
             lock_penalty = 0 if allowed_mod else 100
 
@@ -807,6 +811,7 @@ def detect_discrepancies(year: int, month: int, current_sim_time: datetime = Non
     prev_month = month - 1 if month > 1 else 12
     prev_month_info = get_month_info(prev_year, prev_month)
     prev_num_days = prev_month_info["num_days"]
+    locks_map = get_month_appointment_locks(year, month)
 
     discrepancies = []
 
@@ -876,7 +881,8 @@ def detect_discrepancies(year: int, month: int, current_sim_time: datetime = Non
                         shifts_by_doc_day=shifts_by_doc_day,
                         prev_month_shifts_by_doc=prev_month_shifts_by_doc,
                         year=year,
-                        month=month
+                        month=month,
+                        locks_map=locks_map
                     )
 
                     srv_full = SERVICE_LABELS.get(srv, srv)
@@ -927,7 +933,8 @@ def detect_discrepancies(year: int, month: int, current_sim_time: datetime = Non
                         shifts_by_doc_day=shifts_by_doc_day,
                         prev_month_shifts_by_doc=prev_month_shifts_by_doc,
                         year=year,
-                        month=month
+                        month=month,
+                        locks_map=locks_map
                     )
 
                     srv_full = SERVICE_LABELS.get(srv, srv)
