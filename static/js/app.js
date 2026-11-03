@@ -488,6 +488,18 @@ function renderMatrix() {
                     badgeClass += "shift-DES";
                     badgeText = "DES";
                     subText = "12h";
+                } else if (sp === "Camp") {
+                    badgeClass += "shift-Camp bg-orange-100 text-orange-800 border-orange-300 font-bold";
+                    badgeText = "Camp";
+                    subText = "Camp";
+                } else if (sp === "Capa") {
+                    badgeClass += "shift-Capa bg-indigo-100 text-indigo-800 border-indigo-300 font-bold";
+                    badgeText = "Capa";
+                    subText = "Capa";
+                } else if (sp === "L150") {
+                    badgeClass += "shift-L150 bg-slate-100 text-slate-700 border-slate-300 font-bold";
+                    badgeText = "L150";
+                    subText = "L150";
                 } else if (sp === "M") {
                     badgeClass += `shift-M shift-M-${srv}`;
                     badgeText = `M-${srv}`;
@@ -655,6 +667,9 @@ async function approveDayDiscrepancy(day, alertMsg) {
 function getShiftFullDescription(sp, srv, docName, day) {
     if (sp === "12h") return `Día ${day}: ${docName} - Turno 12h (${srv})`;
     if (sp === "DES") return `Día ${day}: ${docName} - Descanso de guardia obligatorio post-12h`;
+    if (sp === "Camp") return `Día ${day}: ${docName} - Campaña de Salud (Camp)`;
+    if (sp === "Capa") return `Día ${day}: ${docName} - Capacitación Oficial (Capa)`;
+    if (sp === "L150") return `Día ${day}: ${docName} - Libre 150 horas (L150)`;
     if (sp === "LIBRE") return `Día ${day}: ${docName} - Día Libre`;
     const period = sp === "M" ? "Mañana" : "Tarde";
     const serviceName = srv === "TU" ? "Tópico de Urgencias" : (srv === "CE" ? "Consultorio de Medicina" : "Telesalud/TBC/MCI");
@@ -710,6 +725,39 @@ function renderServiceOptions(period, defaultService) {
             <div class="p-2.5 rounded-lg bg-purple-50 border border-purple-200 text-xs text-purple-900 flex items-center gap-2">
                 <i class="fa-solid fa-moon text-purple-600"></i>
                 <span>Descanso de guardia obligatorio posterior a un turno de 12 horas (Violeta).</span>
+            </div>
+        `;
+        return;
+    }
+
+    if (period === "Camp") {
+        container.innerHTML = `
+            <div class="p-2.5 rounded-lg bg-orange-50 border border-orange-200 text-xs text-orange-900 flex items-center gap-2">
+                <i class="fa-solid fa-bullhorn text-orange-600"></i>
+                <span>Campaña de Salud (Camp): Actividad extramural o preventiva (computa 6h).</span>
+                <input type="hidden" name="optService" value="Camp">
+            </div>
+        `;
+        return;
+    }
+
+    if (period === "Capa") {
+        container.innerHTML = `
+            <div class="p-2.5 rounded-lg bg-indigo-50 border border-indigo-200 text-xs text-indigo-900 flex items-center gap-2">
+                <i class="fa-solid fa-graduation-cap text-indigo-600"></i>
+                <span>Capacitación Oficial (Capa): Docencia o capacitación médica continua (computa 6h).</span>
+                <input type="hidden" name="optService" value="Capa">
+            </div>
+        `;
+        return;
+    }
+
+    if (period === "L150") {
+        container.innerHTML = `
+            <div class="p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-xs text-slate-800 flex items-center gap-2">
+                <i class="fa-solid fa-scale-balanced text-slate-600"></i>
+                <span>Libre 150 horas (L150): Día libre por cumplimiento de jornada máxima de 150 horas.</span>
+                <input type="hidden" name="optService" value="L150">
             </div>
         `;
         return;

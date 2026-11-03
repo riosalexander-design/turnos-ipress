@@ -18,7 +18,10 @@ SERVICES_AFTERNOON = ["TU", "CE"]      # Tópico de Urgencias, Consultorio de Me
 SERVICE_LABELS = {
     "TU": "Tópico de Urgencias (TU)",
     "CE": "Consultorio de Medicina (CE)",
-    "TS": "Telesalud/TBC/MCI (TS)"
+    "TS": "Telesalud/TBC/MCI (TS)",
+    "Camp": "Campaña (Camp)",
+    "Capa": "Capacitación (Capa)",
+    "L150": "Libre 150 horas (L150)"
 }
 
 def sync_appointment_locks_from_citas_db(citas_db_path: str = None, source_citas_db_path: str = None, replace_all: bool = False) -> dict:
@@ -305,11 +308,11 @@ def get_doctor_quota_summary(year: int, month: int) -> dict:
                     "service": s["service"],
                     "is_proposal": s["is_proposal"]
                 }
-                if sp in ("M", "T"):
+                if sp in ("M", "T", "Camp", "Capa"):
                     count_6h += 1
                 elif sp == "12h":
                     count_12h += 1
-                elif sp == "DES":
+                elif sp in ("DES", "L150"):
                     count_des += 1
 
             # Cada turno de 12h equivale a 2 turnos de 6h

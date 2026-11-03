@@ -34,6 +34,9 @@ SHIFT_COLORS = {
     "M-TS": {"fill": "FEF08A", "font": "713F12"}, # Amarillo Mañana Telesalud
     "T-TU": {"fill": "BBF7D0", "font": "14532D"}, # Verde Tarde Urgencias
     "T-CE": {"fill": "BBF7D0", "font": "14532D"}, # Verde Tarde Consultorio
+    "Camp": {"fill": "FFEDD5", "font": "C2410C"}, # Naranja Campaña
+    "Capa": {"fill": "E0E7FF", "font": "4338CA"}, # Azul suave Capacitación
+    "L150": {"fill": "F1F5F9", "font": "475569"}, # Gris suave Libre 150h
     "DES":  {"fill": "EDE9FE", "font": "5B21B6"}, # Violeta descanso post-12h
     "LIBRE": {"fill": "F5F3FF", "font": "6B21A8"} # Violeta día libre
 }
@@ -185,6 +188,11 @@ def generate_excel_schedule(year: int, month: int, ipress_name: str = "IPRESS SA
                     cell.value = "DES"
                     cell.fill = PatternFill(start_color=SHIFT_COLORS["DES"]["fill"], end_color=SHIFT_COLORS["DES"]["fill"], fill_type="solid")
                     cell.font = Font(size=9, italic=True, color=SHIFT_COLORS["DES"]["font"])
+                elif sp in ("Camp", "Capa", "L150"):
+                    cell.value = sp
+                    color_cfg = SHIFT_COLORS[sp]
+                    cell.fill = PatternFill(start_color=color_cfg["fill"], end_color=color_cfg["fill"], fill_type="solid")
+                    cell.font = Font(size=9, bold=True, color=color_cfg["font"])
                 elif sp in ("M", "T"):
                     label = f"{sp}-{srv}"
                     cell.value = label
@@ -270,6 +278,9 @@ def generate_excel_schedule(year: int, month: int, ipress_name: str = "IPRESS SA
         ("T-TU", "Tarde - Tópico Urgencias", SHIFT_COLORS["T-TU"]["fill"]),
         ("T-CE", "Tarde - Consultorio de Medicina", SHIFT_COLORS["T-CE"]["fill"]),
         ("12h", "Turno 12h (Celeste - Mañana+Tarde)", SHIFT_COLORS["12h"]["fill"]),
+        ("Camp", "Campaña (Camp - Naranja)", SHIFT_COLORS["Camp"]["fill"]),
+        ("Capa", "Capacitación (Capa - Azul)", SHIFT_COLORS["Capa"]["fill"]),
+        ("L150", "Libre 150 horas (L150 - Gris)", SHIFT_COLORS["L150"]["fill"]),
         ("DES", "Descanso post-12h (Violeta)", SHIFT_COLORS["DES"]["fill"]),
         ("Libre", "Día Libre (Violeta)", SHIFT_COLORS["LIBRE"]["fill"]),
     ]
@@ -339,6 +350,9 @@ VALID_PROPOSAL_SHIFT_CODES = [
     "12h (TS+CE)",
     "12h (TU+TU)",
     "12h (CE+CE)",
+    "Camp",
+    "Capa",
+    "L150",
     "DES",
     "Libre"
 ]
@@ -366,6 +380,12 @@ def _normalize_shift_code(raw_val: str) -> tuple[str, str] | None:
         return ("T", "TU")
     if u in ("T-CE", "TCE"):
         return ("T", "CE")
+    if u in ("CAMP", "CAMPAÑA", "CAMPANA"):
+        return ("Camp", "Camp")
+    if u in ("CAPA", "CAPACITACION", "CAPACITACIÓN"):
+        return ("Capa", "Capa")
+    if u in ("L150", "LIBRE150", "LIBRE150H", "LIBRE150HORAS", "L-150"):
+        return ("L150", "L150")
     if u in ("DES", "DESCANSO"):
         return ("DES", "DES")
 
@@ -510,6 +530,9 @@ def generate_blank_proposal_template(year: int, month: int, doctor: dict, ipress
         ("12h (TS+CE)", "12 Horas: Mañana Telesalud + Tarde Consultorio"),
         ("12h (TU+TU)", "12 Horas: Mañana Urgencias + Tarde Urgencias"),
         ("12h (CE+CE)", "12 Horas: Mañana Consultorio + Tarde Consultorio"),
+        ("Camp", "Campaña de Salud (Camp - 6h)"),
+        ("Capa", "Capacitación Oficial / Docencia (Capa - 6h)"),
+        ("L150", "Libre 150 horas (L150 - Cumplimiento de jornada)"),
         ("DES", "Descanso post-guardia de 12 horas"),
         ("Libre", "Día Libre / Sin turno"),
     ]
@@ -718,6 +741,11 @@ def parse_and_import_doctor_proposal(
                 if sp in ("M", "T"):
                     count_6h += 1
                     lbl = f"{sp}-{srv}"
+                elif sp in ("Camp", "Capa"):
+                    count_6h += 1
+                    lbl = sp
+                elif sp == "L150":
+                    lbl = "L150"
                 elif sp == "12h":
                     count_12h += 1
                     lbl = f"12h ({srv})"

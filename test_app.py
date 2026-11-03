@@ -508,6 +508,53 @@ class TestIPRESSScheduling(unittest.TestCase):
         self.assertIn("Consultorio de Medicina (CE)", alt["text"])
         print(f"[OK] Test 13: Sugerencia concreta verificando turno anterior: {alt['text']}")
 
+    def test_14_campana_capacitacion_libre150(self):
+        """Verifica que las opciones Campaña (Camp), Capacitación (Capa) y Libre 150 horas (L150) se graben y procesen correctamente."""
+        from exporter import _normalize_shift_code, generate_excel_schedule, generate_blank_proposal_template
+        year, month = 2026, 11
+
+        with get_connection() as conn:
+            conn.execute("DELETE FROM shifts WHERE year = ? AND month = ? AND doctor_id = 1", (year, month))
+            conn.commit()
+
+        # 1. Normalización de códigos de propuesta
+        self.assertEqual(_normalize_shift_code("Camp"), ("Camp", "Camp"))
+        self.assertEqual(_normalize_shift_code("Campaña"), ("Camp", "Camp"))
+        self.assertEqual(_normalize_shift_code("Capa"), ("Capa", "Capa"))
+        self.assertEqual(_normalize_shift_code("Capacitación"), ("Capa", "Capa"))
+        self.assertEqual(_normalize_shift_code("L150"), ("L150", "L150"))
+        self.assertEqual(_normalize_shift_code("Libre 150 horas"), ("L150", "L150"))
+
+        # 2. Grabación por parte de Jefatura/RRHH
+        res_camp = record_doctor_shift(year, month, 1, 1, "Camp", "Camp", user_id=6, user_name="Jefatura", user_role="admin")
+        self.assertTrue(res_camp["success"])
+
+        res_capa = record_doctor_shift(year, month, 2, 1, "Capa", "Capa", user_id=6, user_name="Jefatura", user_role="admin")
+        self.assertTrue(res_capa["success"])
+
+        res_l150 = record_doctor_shift(year, month, 3, 1, "L150", "L150", user_id=6, user_name="Jefatura", user_role="admin")
+        self.assertTrue(res_l150["success"])
+
+        # 3. Resumen y cálculo de cuota
+        summary = get_doctor_quota_summary(year, month)["doctors_summary"][1]
+        # Camp y Capa computan como 6h (total = 2 turnos de 6h)
+        self.assertEqual(summary["days"][1]["shift_period"], "Camp")
+        self.assertEqual(summary["days"][2]["shift_period"], "Capa")
+        self.assertEqual(summary["days"][3]["shift_period"], "L150")
+        self.assertEqual(summary["count_6h"], 2)
+        self.assertEqual(summary["total_equivalent_shifts"], 2)
+
+        # 4. Generación de Excel con los nuevos turnos
+        excel_stream = generate_excel_schedule(year, month, "IPRESS TEST")
+        self.assertGreater(len(excel_stream.getvalue()), 5000)
+
+        # 5. Formato en blanco de propuesta
+        doc_obj = {"id": 1, "name": "Caldas Pacsi, Lily Katherine", "cmp": "71201", "condition": "CAS"}
+        blank_stream = generate_blank_proposal_template(year, month, doc_obj, "IPRESS TEST")
+        self.assertGreater(len(blank_stream.getvalue()), 5000)
+
+        print("[OK] Test 14: Opciones de Campaña (Camp), Capacitación (Capa) y Libre 150 horas (L150) verificadas con éxito.")
+
     @classmethod
     def tearDownClass(cls):
         """Limpia la base de datos temporal de pruebas."""

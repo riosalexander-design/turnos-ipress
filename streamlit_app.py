@@ -112,6 +112,9 @@ st.markdown("""
     .badge-12h { background-color: #bae6fd; color: #0369a1; border: 1px solid #7dd3fc; }
     .badge-DES { background-color: #ede9fe; color: #5b21b6; border: 1px solid #c4b5fd; font-style: italic; }
     .badge-LIBRE { background-color: #f5f3ff; color: #6b21a8; border: 1px solid #ddd6fe; font-weight: 600; }
+    .badge-Camp { background-color: #ffedd5; color: #c2410c; border: 1px solid #fdba74; font-weight: bold; }
+    .badge-Capa { background-color: #e0e7ff; color: #4338ca; border: 1px solid #a5b4fc; font-weight: bold; }
+    .badge-L150 { background-color: #f1f5f9; color: #475569; border: 1px solid #cbd5e1; font-weight: bold; }
     .badge-M-TU, .badge-M-CE, .badge-M-TS { background-color: #fef08a; color: #713f12; border: 1px solid #facc15; }
     .badge-T-TU, .badge-T-CE { background-color: #bbf7d0; color: #14532d; border: 1px solid #86efac; }
     .badge-empty { color: #cbd5e1; }
@@ -348,7 +351,13 @@ def open_shift_recording_modal(default_day: int = None, default_doc_id: int = No
 
     cur_shift = doc_summary.get(target_id, {}).get("days", {}).get(edit_day)
     if cur_shift and cur_shift.get("shift_period") != "LIBRE":
-        st.info(f"📌 Turno actualmente registrado para **{target_doc['name']}** el Día {edit_day:02d}: **{cur_shift['shift_period']} ({cur_shift['service']})**")
+        sp_cur = cur_shift.get("shift_period")
+        srv_cur = cur_shift.get("service")
+        if sp_cur in ("Camp", "Capa", "L150"):
+            desc_map = {"Camp": "Campaña (Camp)", "Capa": "Capacitación (Capa)", "L150": "Libre 150 horas (L150)"}
+            st.info(f"📌 Turno actualmente registrado para **{target_doc['name']}** el Día {edit_day:02d}: **{desc_map.get(sp_cur, sp_cur)}**")
+        else:
+            st.info(f"📌 Turno actualmente registrado para **{target_doc['name']}** el Día {edit_day:02d}: **{sp_cur} ({srv_cur})**")
     else:
         st.info(f"📌 Actualmente **{target_doc['name']}** figura como **Libre** el Día {edit_day:02d}.")
 
@@ -373,6 +382,9 @@ def open_shift_recording_modal(default_day: int = None, default_doc_id: int = No
                 "Mañana (6h - Amarillo)",
                 "Tarde (6h - Verde)",
                 "12 Horas (Mañana + Tarde - Celeste)",
+                "Campaña (Camp - Naranja)",
+                "Capacitación (Capa - Azul)",
+                "Libre 150 horas (L150 - Gris)",
                 "Descanso de Guardia (DES - Violeta)",
                 "Día Libre (Libre - Violeta)"
             ],
@@ -422,6 +434,18 @@ def open_shift_recording_modal(default_day: int = None, default_doc_id: int = No
                     srv_val = code
                     break
             st.caption("ℹ️ Al grabar un turno de 12 horas, el día siguiente sin turno recibirá descanso (`DES`).")
+        elif "Campaña" in period_choice:
+            st.info("🏥 **Campaña de Salud (Camp):** Actividad de atención integral extramural o preventiva (computa 6h para la meta mensual).")
+            sp_val = "Camp"
+            srv_val = "Camp"
+        elif "Capacitación" in period_choice:
+            st.info("📚 **Capacitación Oficial (Capa):** Actividad de capacitación médica continua, formativa o docencia (computa 6h para la meta mensual).")
+            sp_val = "Capa"
+            srv_val = "Capa"
+        elif "Libre 150" in period_choice:
+            st.info("⚖️ **Libre 150 horas (L150):** Día libre reglamentario por cumplimiento de la jornada laboral máxima mensual de 150 horas.")
+            sp_val = "L150"
+            srv_val = "L150"
         elif "DES" in period_choice:
             st.info("Descanso obligatorio de guardia (`DES` - Violeta).")
             sp_val = "DES"
@@ -703,6 +727,26 @@ with b_col2:
 # MATRIZ VISUAL DEL ROL MENSUAL (INTERACTIVA AL HACER CLIC EN FECHA/CELDA PARA JEFATURA Y RRHH)
 # -------------------------------------------------------------------
 st.subheader("🗓️ Matriz Mensual de Turnos Asistenciales (Tiempo Real)")
+
+# Leyenda Visual Oficial de Servicios y Turnos
+st.markdown("""
+<div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 10px 14px; margin-bottom: 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 11px;">
+    <strong style="color: #1e293b; margin-right: 2px;">🏷️ LEYENDA OFICIAL:</strong>
+    <span class="badge-shift badge-M-TU" style="padding: 3px 6px;">M-TU (Mañana Urgencias)</span>
+    <span class="badge-shift badge-M-CE" style="padding: 3px 6px;">M-CE (Mañana Consultorio)</span>
+    <span class="badge-shift badge-M-TS" style="padding: 3px 6px;">M-TS (Mañana Telesalud)</span>
+    <span class="badge-shift badge-T-TU" style="padding: 3px 6px;">T-TU (Tarde Urgencias)</span>
+    <span class="badge-shift badge-T-CE" style="padding: 3px 6px;">T-CE (Tarde Consultorio)</span>
+    <span class="badge-shift badge-12h" style="padding: 3px 6px;">12h (Mañana + Tarde)</span>
+    <span class="badge-shift badge-Camp" style="padding: 3px 6px;">Camp (Campaña - 6h)</span>
+    <span class="badge-shift badge-Capa" style="padding: 3px 6px;">Capa (Capacitación - 6h)</span>
+    <span class="badge-shift badge-L150" style="padding: 3px 6px;">L150 (Libre 150 horas)</span>
+    <span class="badge-shift badge-DES" style="padding: 3px 6px;">DES (Descanso post-12h)</span>
+    <span class="badge-shift badge-LIBRE" style="padding: 3px 6px;">Libre (Día Libre)</span>
+    <span style="font-size: 11px; color: #991b1b; font-weight: bold; margin-left: 4px;">🔒 Citas Activas (CE)</span>
+</div>
+""", unsafe_allow_html=True)
+
 if is_admin_or_rrhh:
     st.info(
         "👆 **Modo Interactivo Activo (Jefatura / RRHH):** Haga **clic directamente sobre cualquier número de fecha o celda del horario** "
@@ -710,8 +754,9 @@ if is_admin_or_rrhh:
     )
 else:
     st.caption(
-        "**Servicios Mañana:** `TU` (Tópico de Urgencias), `CE` (Consultorio de Medicina), `TS` (Telesalud/TBC/MCI) | "
-        "**Servicios Tarde:** `TU` (Tópico de Urgencias), `CE` (Consultorio de Medicina) | "
+        "**Servicios Mañana:** `TU` (Urgencias), `CE` (Consultorio), `TS` (Telesalud) | "
+        "**Servicios Tarde:** `TU` (Urgencias), `CE` (Consultorio) | "
+        "**Turnos Adicionales:** `Camp` (Campaña - 6h), `Capa` (Capacitación - 6h), `L150` (Libre 150 horas) | "
         "**Modificación y Aprobación:** Exclusiva para Jefatura Médica y RRHH haciendo clic sobre la fecha."
     )
 
@@ -760,6 +805,9 @@ matrix_styles = """
     .badge-12h { background-color: #bae6fd; color: #0369a1; border: 1px solid #7dd3fc; }
     .badge-DES { background-color: #ede9fe; color: #5b21b6; border: 1px solid #c4b5fd; font-style: italic; }
     .badge-LIBRE { background-color: #f5f3ff; color: #6b21a8; border: 1px solid #ddd6fe; font-weight: 600; }
+    .badge-Camp { background-color: #ffedd5; color: #c2410c; border: 1px solid #fdba74; font-weight: bold; }
+    .badge-Capa { background-color: #e0e7ff; color: #4338ca; border: 1px solid #a5b4fc; font-weight: bold; }
+    .badge-L150 { background-color: #f1f5f9; color: #475569; border: 1px solid #cbd5e1; font-weight: bold; }
     .badge-M-TU, .badge-M-CE, .badge-M-TS { background-color: #fef08a; color: #713f12; border: 1px solid #facc15; }
     .badge-T-TU, .badge-T-CE { background-color: #bbf7d0; color: #14532d; border: 1px solid #86efac; }
     .col-sun { background-color: #e2e8f0; color: #64748b; }
@@ -828,6 +876,12 @@ for doc in doctors_only:
                 b_html = f"<span class='badge-shift badge-12h'>12h<br><small>{srv}</small>{lock_badge}</span>"
             elif sp == "DES":
                 b_html = "<span class='badge-shift badge-DES'>DES</span>"
+            elif sp == "Camp":
+                b_html = f"<span class='badge-shift badge-Camp'>Camp{lock_badge}</span>"
+            elif sp == "Capa":
+                b_html = f"<span class='badge-shift badge-Capa'>Capa{lock_badge}</span>"
+            elif sp == "L150":
+                b_html = f"<span class='badge-shift badge-L150'>L150{lock_badge}</span>"
             else:
                 tag = f"{sp}-{srv}"
                 b_cls = f"badge-{tag}" if f"badge-{tag}" in ("badge-M-TU", "badge-M-CE", "badge-M-TS", "badge-T-TU", "badge-T-CE") else "badge-12h"
