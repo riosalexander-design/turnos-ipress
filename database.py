@@ -54,21 +54,25 @@ def get_database_url() -> str | None:
     if FORCE_SQLITE:
         return None
 
-    env_url = (os.environ.get("DATABASE_URL") or "").strip()
+    env_url = (os.environ.get("DATABASE_URL") or "").strip().strip('"').strip("'")
     if env_url:
         return env_url
 
     try:
         import streamlit as st
         if hasattr(st, "secrets"):
-            if "DATABASE_URL" in st.secrets:
-                val = str(st.secrets["DATABASE_URL"]).strip()
-                if val:
-                    return val
-            if "supabase" in st.secrets and "database_url" in st.secrets["supabase"]:
-                val = str(st.secrets["supabase"]["database_url"]).strip()
-                if val:
-                    return val
+            for key in ("DATABASE_URL", "database_url", "POSTGRES_URL", "postgres_url"):
+                if key in st.secrets:
+                    val = str(st.secrets[key]).strip().strip('"').strip("'")
+                    if val:
+                        return val
+            if "supabase" in st.secrets:
+                sb = st.secrets["supabase"]
+                for subk in ("database_url", "DATABASE_URL", "url"):
+                    if subk in sb:
+                        val = str(sb[subk]).strip().strip('"').strip("'")
+                        if val:
+                            return val
     except Exception:
         pass
 
@@ -82,17 +86,29 @@ def is_postgres_active() -> bool:
 
 
 def get_db_backend_info() -> dict:
-    """Retorna información legible del motor de base de datos activo."""
+    """Retorna información legible del motor de base de datos activo y diagnóstico sin exponer claves."""
     if is_postgres_active():
         return {
             "engine": "postgresql",
             "persistent": True,
             "label": "Supabase PostgreSQL (Nube Persistente)",
+            "reason": "Conectado a Supabase PostgreSQL.",
         }
+    url = get_database_url()
+    if not url:
+        reason = "No se encontró DATABASE_URL en Secrets (o falta reiniciar la app)."
+    elif not (url.startswith("postgres://") or url.startswith("postgresql://")):
+        prefix = url.split("://")[0] + "://" if "://" in url else "formato inválido"
+        reason = f"DATABASE_URL inicia con '{prefix}' (debe iniciar con 'postgresql://')."
+    elif not HAS_PSYCOPG2:
+        reason = "El driver psycopg2 no está instalado aún (haz Reboot app en Streamlit Cloud)."
+    else:
+        reason = "Modo SQLite local activo."
     return {
         "engine": "sqlite",
         "persistent": False,
         "label": "SQLite Local",
+        "reason": reason,
     }
 
 

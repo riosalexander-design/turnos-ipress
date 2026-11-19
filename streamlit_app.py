@@ -200,7 +200,7 @@ with st.sidebar:
     if db_info["persistent"]:
         st.caption("🟢 **Base de datos:** Supabase Cloud (Persistente)")
     else:
-        st.caption("🟡 **Base de datos:** SQLite Local *(Configure `DATABASE_URL` en Secrets para persistencia en la nube)*")
+        st.caption(f"🟡 **Base de datos:** SQLite Local *({db_info.get('reason', '')})*")
     st.markdown("---")
 
     meses_nombres = {
