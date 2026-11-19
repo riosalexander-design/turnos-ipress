@@ -616,8 +616,9 @@ def record_doctor_shift(
                 next_day_info = month_info["days"][day]  # índice day corresponde al día day+1
                 if not next_day_info["is_sunday"]:
                     conn.execute("""
-                        INSERT OR IGNORE INTO shifts (year, month, day, shift_period, service, doctor_id, is_proposal, updated_at)
+                        INSERT INTO shifts (year, month, day, shift_period, service, doctor_id, is_proposal, updated_at)
                         VALUES (?, ?, ?, 'DES', 'DES', ?, 1, CURRENT_TIMESTAMP)
+                        ON CONFLICT(year, month, day, doctor_id) DO NOTHING
                     """, (year, month, day + 1, doctor_id))
 
             log_audit(

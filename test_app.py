@@ -22,6 +22,7 @@ import database
 from database import init_db, get_connection
 
 TEST_DB = os.path.join(os.path.dirname(__file__), "test_turnos.db")
+database.FORCE_SQLITE = True
 database.DB_FILE = TEST_DB
 
 from scheduler_engine import (
@@ -554,6 +555,36 @@ class TestIPRESSScheduling(unittest.TestCase):
         self.assertGreater(len(blank_stream.getvalue()), 5000)
 
         print("[OK] Test 14: Opciones de Campaña (Camp), Capacitación (Capa) y Libre 150 horas (L150) verificadas con éxito.")
+
+    def test_15_postgres_sql_translation_and_url_normalization(self):
+        """Verifica la traducción automática de SQL y normalización de URL para Supabase PostgreSQL."""
+        from database import _translate_sql_to_pg, _normalize_pg_url
+
+        # 1. Traducción de DDL AUTOINCREMENT -> SERIAL PRIMARY KEY
+        ddl = "CREATE TABLE IF NOT EXISTS demo (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)"
+        self.assertIn("SERIAL PRIMARY KEY", _translate_sql_to_pg(ddl))
+
+        # 2. Traducción de placeholders '?' -> '%s' sin alterar literales con '?'
+        q = "SELECT * FROM shifts WHERE year = ? AND note = '¿OK?' AND month = ?"
+        self.assertEqual(
+            _translate_sql_to_pg(q, has_params=True),
+            "SELECT * FROM shifts WHERE year = %s AND note = '¿OK?' AND month = %s"
+        )
+
+        # 3. Escape de '%' literal cuando hay parámetros
+        q_like = "SELECT * FROM audit_logs WHERE details LIKE '%100%' AND doctor_id = ?"
+        self.assertEqual(
+            _translate_sql_to_pg(q_like, has_params=True),
+            "SELECT * FROM audit_logs WHERE details LIKE '%%100%%' AND doctor_id = %s"
+        )
+
+        # 4. Normalización de URL de Supabase (postgres:// -> postgresql:// y sslmode=require)
+        raw_url = "postgres://postgres.abc:secret@aws-0-us-east-1.pooler.supabase.com:5432/postgres"
+        norm_url = _normalize_pg_url(raw_url)
+        self.assertTrue(norm_url.startswith("postgresql://"))
+        self.assertIn("sslmode=require", norm_url)
+
+        print("[OK] Test 15: Traducción SQL y normalización de conexión para Supabase PostgreSQL verificadas.")
 
     @classmethod
     def tearDownClass(cls):

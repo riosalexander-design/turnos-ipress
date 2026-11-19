@@ -12,14 +12,18 @@ import pandas as pd
 import streamlit as st
 import database
 import holidays_pe
-importlib.reload(database)
-importlib.reload(holidays_pe)
 import scheduler_engine
-importlib.reload(scheduler_engine)
 import exporter
-importlib.reload(exporter)
 
-from database import init_db, get_connection, hash_pin, log_audit, get_audit_logs, prune_audit_logs
+from database import (
+    init_db,
+    get_connection,
+    hash_pin,
+    log_audit,
+    get_audit_logs,
+    prune_audit_logs,
+    get_db_backend_info,
+)
 from holidays_pe import get_month_info
 from scheduler_engine import (
     get_doctor_quota_summary,
@@ -192,6 +196,11 @@ if st.session_state["user"] is not None and st.session_state["user"].get("role")
 with st.sidebar:
     st.title("🏥 IPRESS Salud")
     st.caption("Sector Asistencial - Programación Mensual")
+    db_info = get_db_backend_info()
+    if db_info["persistent"]:
+        st.caption("🟢 **Base de datos:** Supabase Cloud (Persistente)")
+    else:
+        st.caption("🟡 **Base de datos:** SQLite Local *(Configure `DATABASE_URL` en Secrets para persistencia en la nube)*")
     st.markdown("---")
 
     meses_nombres = {
