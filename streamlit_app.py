@@ -7,10 +7,12 @@ Compatible 100% con Streamlit Community Cloud (share.streamlit.io).
 import io
 import os
 import importlib
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import pandas as pd
 import streamlit as st
 import database
+if not hasattr(database, "_check_pg_reachable"):
+    importlib.reload(database)
 import holidays_pe
 import scheduler_engine
 import exporter
@@ -200,18 +202,29 @@ with st.sidebar:
     if db_info["persistent"]:
         st.caption("🟢 **Base de datos:** Supabase Cloud (Persistente)")
     else:
-        st.caption(f"🟡 **Base de datos:** SQLite Local *({db_info.get('reason', '')})*")
+        diag_reason = db_info.get("reason") or "Falta reiniciar la app en Manage app → Reboot app"
+        st.caption(f"🟡 **Base de datos:** SQLite Local *({diag_reason})*")
     st.markdown("---")
 
     meses_nombres = {
         1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio",
         7: "Julio", 8: "Agosto", 9: "Setiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"
     }
+    now_peru = datetime.now(timezone(timedelta(hours=-5)))
+    available_years = [2026, 2027]
+    default_year_idx = available_years.index(now_peru.year) if now_peru.year in available_years else 0
+    default_month_idx = now_peru.month - 1
+
     col_y, col_m = st.columns(2)
     with col_y:
-        selected_year = st.selectbox("Año", [2026, 2027], index=0)
+        selected_year = st.selectbox("Año", available_years, index=default_year_idx)
     with col_m:
-        selected_month = st.selectbox("Mes", list(meses_nombres.keys()), index=9, format_func=lambda x: meses_nombres[x])
+        selected_month = st.selectbox(
+            "Mes",
+            list(meses_nombres.keys()),
+            index=default_month_idx,
+            format_func=lambda x: meses_nombres[x],
+        )
 
     st.markdown("---")
     st.subheader("🔐 Acceso Jefatura y RRHH")

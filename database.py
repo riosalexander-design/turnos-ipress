@@ -12,6 +12,8 @@ import sqlite3
 import hashlib
 import os
 import re
+import sys
+import subprocess
 from datetime import datetime, timedelta
 
 try:
@@ -21,6 +23,41 @@ try:
 except ImportError:
     psycopg2 = None
     HAS_PSYCOPG2 = False
+
+_PIP_INSTALL_ATTEMPTED = False
+_PG_HEALTH_CACHE = {}  # url -> (ok: bool, err_msg: str)
+
+
+def _ensure_psycopg2() -> bool:
+    """Garantiza que psycopg2 esté disponible, instalándolo en caliente si el contenedor no reinició."""
+    global psycopg2, HAS_PSYCOPG2, _PIP_INSTALL_ATTEMPTED
+    if HAS_PSYCOPG2 and psycopg2 is not None:
+        return True
+    try:
+        import psycopg2 as _pg
+        import psycopg2.extras  # noqa: F401
+        psycopg2 = _pg
+        HAS_PSYCOPG2 = True
+        return True
+    except ImportError:
+        pass
+
+    if not _PIP_INSTALL_ATTEMPTED:
+        _PIP_INSTALL_ATTEMPTED = True
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "--quiet", "psycopg2-binary"],
+                timeout=45,
+                check=False,
+            )
+            import psycopg2 as _pg
+            import psycopg2.extras  # noqa: F401
+            psycopg2 = _pg
+            HAS_PSYCOPG2 = True
+            return True
+        except Exception:
+            pass
+    return False
 
 DB_FILE = os.path.join(os.path.dirname(__file__), "ipress_turnos.db")
 
@@ -46,6 +83,17 @@ def find_external_citas_db() -> str | None:
     return None
 
 
+def _normalize_pg_url(url: str) -> str:
+    """Normaliza el prefijo postgres:// -> postgresql:// y garantiza sslmode=require."""
+    normalized = url.strip().strip('"').strip("'")
+    if normalized.startswith("postgres://"):
+        normalized = "postgresql://" + normalized[len("postgres://"):]
+    if "sslmode=" not in normalized:
+        sep = "&" if "?" in normalized else "?"
+        normalized = f"{normalized}{sep}sslmode=require"
+    return normalized
+
+
 def get_database_url() -> str | None:
     """
     Obtiene la URL de conexión PostgreSQL (Supabase) desde variables de entorno
@@ -61,66 +109,107 @@ def get_database_url() -> str | None:
     try:
         import streamlit as st
         if hasattr(st, "secrets"):
-            for key in ("DATABASE_URL", "database_url", "POSTGRES_URL", "postgres_url"):
+            for key in ("DATABASE_URL", "database_url", "POSTGRES_URL", "postgres_url", "SUPABASE_DB_URL", "SUPABASE_URL"):
                 if key in st.secrets:
                     val = str(st.secrets[key]).strip().strip('"').strip("'")
                     if val:
                         return val
-            if "supabase" in st.secrets:
-                sb = st.secrets["supabase"]
-                for subk in ("database_url", "DATABASE_URL", "url"):
-                    if subk in sb:
-                        val = str(sb[subk]).strip().strip('"').strip("'")
-                        if val:
-                            return val
+            # Buscar recursivamente cualquier valor que inicie con postgres:// o postgresql://
+            for k in list(st.secrets.keys()):
+                v = st.secrets[k]
+                if isinstance(v, str):
+                    sv = v.strip().strip('"').strip("'")
+                    if sv.startswith("postgres://") or sv.startswith("postgresql://"):
+                        return sv
+                elif hasattr(v, "keys"):
+                    for subk in list(v.keys()):
+                        subv = str(v[subk]).strip().strip('"').strip("'")
+                        if subv.startswith("postgres://") or subv.startswith("postgresql://"):
+                            return subv
     except Exception:
         pass
 
     return None
 
 
+def _check_pg_reachable(raw_url: str) -> tuple[bool, str]:
+    """Verifica con timeout corto si la URL PostgreSQL es alcanzable y válida."""
+    if raw_url in _PG_HEALTH_CACHE:
+        return _PG_HEALTH_CACHE[raw_url]
+
+    if not _ensure_psycopg2():
+        return False, "No se pudo cargar el driver psycopg2."
+
+    try:
+        pg_url = _normalize_pg_url(raw_url)
+        conn = psycopg2.connect(pg_url, connect_timeout=6)
+        conn.close()
+        _PG_HEALTH_CACHE[raw_url] = (True, "Conectado a Supabase PostgreSQL.")
+        return True, "Conectado a Supabase PostgreSQL."
+    except Exception as exc:
+        err_str = str(exc).strip().replace("\n", " ")
+        if "Network is unreachable" in err_str or "Cannot assign requested address" in err_str:
+            msg = "La URL usa conexión directa IPv6 (db.xxx.supabase.co). En Supabase → Connect elige 'Session pooler' (*.pooler.supabase.com)."
+        elif "password authentication failed" in err_str.lower():
+            msg = "Contraseña incorrecta en DATABASE_URL (verifica que reemplazaste [YOUR-PASSWORD] sin dejar corchetes)."
+        elif "could not translate host name" in err_str.lower() or "name or service not known" in err_str.lower():
+            msg = "Host de Supabase no válido en DATABASE_URL (usa la URI de Connect → Session pooler)."
+        else:
+            msg = f"Error al conectar a Supabase: {err_str[:120]}"
+        _PG_HEALTH_CACHE[raw_url] = (False, msg)
+        return False, msg
+
+
 def is_postgres_active() -> bool:
-    """Indica si el sistema está operando sobre PostgreSQL (Supabase)."""
+    """Indica si el sistema está operando sobre PostgreSQL (Supabase) con conexión verificada."""
     url = get_database_url()
-    return bool(url and HAS_PSYCOPG2 and (url.startswith("postgres://") or url.startswith("postgresql://")))
+    if not url or not (url.startswith("postgres://") or url.startswith("postgresql://")):
+        return False
+    ok, _ = _check_pg_reachable(url)
+    return ok
 
 
 def get_db_backend_info() -> dict:
     """Retorna información legible del motor de base de datos activo y diagnóstico sin exponer claves."""
-    if is_postgres_active():
-        return {
-            "engine": "postgresql",
-            "persistent": True,
-            "label": "Supabase PostgreSQL (Nube Persistente)",
-            "reason": "Conectado a Supabase PostgreSQL.",
-        }
     url = get_database_url()
+    if url and (url.startswith("postgres://") or url.startswith("postgresql://")):
+        ok, msg = _check_pg_reachable(url)
+        if ok:
+            return {
+                "engine": "postgresql",
+                "persistent": True,
+                "label": "Supabase PostgreSQL (Nube Persistente)",
+                "reason": msg,
+            }
+        return {
+            "engine": "sqlite",
+            "persistent": False,
+            "label": "SQLite Local",
+            "reason": msg,
+        }
+
     if not url:
-        reason = "No se encontró DATABASE_URL en Secrets (o falta reiniciar la app)."
-    elif not (url.startswith("postgres://") or url.startswith("postgresql://")):
-        prefix = url.split("://")[0] + "://" if "://" in url else "formato inválido"
-        reason = f"DATABASE_URL inicia con '{prefix}' (debe iniciar con 'postgresql://')."
-    elif not HAS_PSYCOPG2:
-        reason = "El driver psycopg2 no está instalado aún (haz Reboot app en Streamlit Cloud)."
+        secret_keys = []
+        try:
+            import streamlit as st
+            if hasattr(st, "secrets"):
+                secret_keys = list(st.secrets.keys())
+        except Exception:
+            pass
+        if secret_keys:
+            reason = f"En Secrets existen las claves {secret_keys}, pero falta DATABASE_URL = \"postgresql://...\""
+        else:
+            reason = "No hay DATABASE_URL en Streamlit Cloud → Settings → Secrets"
     else:
-        reason = "Modo SQLite local activo."
+        prefix = url.split("://")[0] + "://" if "://" in url else "formato inválido"
+        reason = f"DATABASE_URL inicia con '{prefix}' (debe ser la URI 'postgresql://' de Connect → Session pooler)"
+
     return {
         "engine": "sqlite",
         "persistent": False,
         "label": "SQLite Local",
         "reason": reason,
     }
-
-
-def _normalize_pg_url(url: str) -> str:
-    """Normaliza el prefijo postgres:// -> postgresql:// y garantiza sslmode=require."""
-    normalized = url.strip()
-    if normalized.startswith("postgres://"):
-        normalized = "postgresql://" + normalized[len("postgres://"):]
-    if "sslmode=" not in normalized:
-        sep = "&" if "?" in normalized else "?"
-        normalized = f"{normalized}{sep}sslmode=require"
-    return normalized
 
 
 def _translate_sql_to_pg(sql: str, has_params: bool = False) -> str:

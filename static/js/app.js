@@ -16,10 +16,19 @@ let state = {
 };
 
 document.addEventListener("DOMContentLoaded", async () => {
-    // Configurar selectores de año y mes
+    // Configurar selectores de año y mes al mes actual por defecto
     const monthSelect = document.getElementById("selectMonth");
     const yearSelect = document.getElementById("selectYear");
-    
+    const now = new Date();
+    const curMonth = String(now.getMonth() + 1);
+    const curYear = String(now.getFullYear());
+    if ([...monthSelect.options].some(o => o.value === curMonth)) {
+        monthSelect.value = curMonth;
+    }
+    if ([...yearSelect.options].some(o => o.value === curYear)) {
+        yearSelect.value = curYear;
+    }
+
     state.month = parseInt(monthSelect.value);
     state.year = parseInt(yearSelect.value);
 
